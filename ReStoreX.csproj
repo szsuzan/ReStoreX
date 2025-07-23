@@ -1,0 +1,55 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <ApplicationManifest>app.manifest</ApplicationManifest>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Explicitly include only required .cs files -->
+    <Compile Include="Program.cs" />
+    <Compile Include="Forms\**\*.cs" />
+    <Compile Include="Controls\**\*.cs" />
+    <Compile Include="Dialogs\**\*.cs" />
+    <Compile Include="Database\**\*.cs" />
+    <Compile Include="Analyzers\**\*.cs" />
+    <Compile Include="Utilities\**\*.cs" />
+
+    <!-- Include new ReStoreX files -->
+    <Compile Include="ReStoreX\Core\IReStoreXFileSystem.cs" />
+    <Compile Include="ReStoreX\Core\DiskTypes.cs" />
+    <Compile Include="ReStoreX\Core\DiskDevices.cs" />
+    <Compile Include="ReStoreX\FATX\ReStoreXFileSystem.cs" />
+    <Compile Include="ReStoreX\FAT32\FAT32FileSystem.cs" />
+    <Compile Include="ReStoreX\NTFS\NTFSFileSystem.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Core disk and filesystem utilities -->
+    <PackageReference Include="DiscUtils" Version="0.16.13" />
+    <PackageReference Include="DiscUtils.Ntfs" Version="0.16.13" />
+    <PackageReference Include="DiscUtils.Fat" Version="0.16.13" />
+    <PackageReference Include="System.Management" Version="8.0.0" />
+    
+    <!-- File analysis and recovery -->
+    <PackageReference Include="System.Security.Cryptography.Algorithms" Version="4.3.1" />
+    <PackageReference Include="Crc32.NET" Version="1.2.0" />
+    
+    <!-- Performance and async operations -->
+    <PackageReference Include="System.IO.Pipelines" Version="8.0.0" />
+    <PackageReference Include="Microsoft.IO.RecyclableMemoryStream" Version="2.3.2" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Platform specific dependencies -->
+    <PackageReference Include="Microsoft.Win32.Registry" Version="5.0.0" Condition="'$(OS)' == 'Windows_NT'" />
+    <PackageReference Include="System.IO.FileSystem.AccessControl" Version="5.0.0" />
+  </ItemGroup>
+
+</Project>
