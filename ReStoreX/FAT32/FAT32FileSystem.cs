@@ -15,6 +15,7 @@ namespace ReStoreX.FAT32
         public long MaxClusters => fat?.TotalSectors / (fat?.SectorsPerCluster ?? 1) ?? 0;
         public long TotalSpace => fat?.TotalSectors * (fat?.BytesPerSector ?? 0) ?? 0;
         public long FreeSpace => (fat?.TotalSectors ?? 0 - fat?.UsedSpace ?? 0) * (fat?.BytesPerSector ?? 0);
+        public bool IsReady => fat != null;
 
         public void LoadFromStream(Stream diskStream)
         {
@@ -96,6 +97,16 @@ namespace ReStoreX.FAT32
         {
             // Placeholder for file signature based recovery
             return false;
+        }
+
+        public IEnumerable<ClusterInfo> GetClusterMap()
+        {
+            if (fat == null)
+                throw new InvalidOperationException("Filesystem not loaded");
+
+            var clusters = new List<ClusterInfo>();
+            // TODO: Implement cluster mapping using FAT32 File Allocation Table
+            return clusters;
         }
 
         public DiskHealthInfo GetDiskHealth()

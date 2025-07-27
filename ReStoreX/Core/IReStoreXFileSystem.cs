@@ -1,5 +1,5 @@
 // ============================================================================
-// ReStoreX Core Interface and Filesystem Placeholders
+// ReStoreX Core Interface and Filesystem Definitions
 // ============================================================================
 
 using System;
@@ -8,74 +8,79 @@ using System.IO;
 
 namespace ReStoreX.Core
 {
-    public static class FileSystemExtensions
+    public interface IDisk
     {
-        public static async Task<RecoveryReport> AnalyzeRecoverability(this IReStoreXFileSystem fs, DeletedFileEntry file)
-        {
-            var report = new RecoveryReport
-            {
-                FileName = file.FileName,
-                FileSize = file.FileSize,
-                OriginalPath = file.DirectoryPath
-            };
-
-            // Check cluster chain
-            if (file.FragmentedClusters.Count > 0)
-            {
-                report.IsFragmented = true;
-                report.FragmentCount = file.FragmentedClusters.Count;
-            }
-
-            // Check for bad sectors in file's clusters
-            var badSectors = await Task.Run(() => fs.ScanForBadSectors()
-                .Where(s => s.ClusterNumber.HasValue && 
-                           file.FragmentedClusters.Contains(s.ClusterNumber.Value))
-                .ToList());
-
-            report.HasBadSectors = badSectors.Any();
-            report.BadSectorCount = badSectors.Count;
-            report.IsRecoverable = file.RecoveryStatus == FileRecoveryStatus.Recoverable ||
-                                 (file.RecoveryStatus == FileRecoveryStatus.Fragmented && 
-                                  !report.HasBadSectors);
-
-            return report;
-        }
-
-        public static string GetRecoverySuggestion(this RecoveryReport report)
-        {
-            if (report.IsRecoverable)
-                return "File can be recovered normally.";
-
-            var suggestions = new List<string>();
-
-            if (report.IsFragmented)
-                suggestions.Add($"File is fragmented into {report.FragmentCount} pieces.");
-
-            if (report.HasBadSectors)
-                suggestions.Add($"File has {report.BadSectorCount} bad sectors.");
-
-            if (!report.IsRecoverable && report.SignatureFound)
-                suggestions.Add("Try recovering by file signature.");
-
-            return string.Join(" ", suggestions);
-        }
+        string DeviceId { get; }
+        long Length { get; }
+        byte[] ReadSector(long offset, int size);
+        void WriteSector(long offset, byte[] data);
     }
 
-    public class RecoveryReport
+    /// <summary>
+    /// Generic interface for all supported filesystems (FATX, FAT32, NTFS).
+    /// </summary>
+    public interface IReStoreXFileSystem
+    {
+        string Name { get; }
+        long BytesPerCluster { get; }
+        long MaxClusters { get; }
+        long TotalSpace { get; }
+        long FreeSpace { get; }
+        bool IsReady { get; }
+
+        void LoadFromStream(Stream diskStream);
+        IEnumerable<FileEntry> GetFiles(string directory = "/");
+        IEnumerable<DirectoryEntry> GetDirectories(string directory = "/");
+        byte[] ReadFile(string path);
+        
+        // Recovery features
+        IEnumerable<DeletedFileEntry> ScanForDeletedFiles();
+        bool RecoverFile(DeletedFileEntry file, string destinationPath);
+        bool RecoverFileBySignature(string fileSignature, string destinationPath);
+        IEnumerable<ClusterInfo> GetClusterMap();
+        
+        // Disk health and analysis
+        DiskHealthInfo GetDiskHealth();
+        IEnumerable<BadSectorInfo> ScanForBadSectors();
+        bool RepairBadSectors(IEnumerable<BadSectorInfo> sectors);
+    }
+
+    /// <summary>
+    /// Represents a generic file entry.
+    /// </summary>
+    public class FileEntry
     {
         public required string FileName { get; set; }
+        public string FullPath { get; set; } = "";
         public long FileSize { get; set; }
-        public string? OriginalPath { get; set; }
-        public bool IsFragmented { get; set; }
-        public int FragmentCount { get; set; }
-        public bool HasBadSectors { get; set; }
-        public int BadSectorCount { get; set; }
-        public bool IsRecoverable { get; set; }
-        public bool SignatureFound { get; set; }
+        public long FirstCluster { get; set; }
+        public DateTime CreationTime { get; set; }
+        public DateTime LastWriteTime { get; set; }
+        public DateTime LastAccessTime { get; set; }
+        public FileAttributes Attributes { get; set; }
+        public bool IsCorrupted { get; set; }
+        public bool IsDeleted { get; set; }
+        public string? ErrorMessage { get; set; }
     }
+
+    /// <summary>
+    /// Represents a generic directory entry.
+    /// </summary>
+    public class DirectoryEntry
+    {
+        public required string DirectoryName { get; set; }
+        public string FullPath { get; set; } = "";
+        public List<FileEntry> Files { get; set; } = new List<FileEntry>();
+        public List<DirectoryEntry> SubDirectories { get; set; } = new List<DirectoryEntry>();
+        public DateTime CreationTime { get; set; }
+        public DateTime LastWriteTime { get; set; }
+        public DateTime LastAccessTime { get; set; }
+        public bool IsRoot { get; set; }
+    }
+
     public class DeletedFileEntry : FileEntry
     {
-        public required FileRecoveryStatus RecoveryStatus { get; set; }
+        public FileRecoveryStatus RecoveryStatus { get; set; }
         public double RecoveryProbability { get; set; }
         public string? SignatureType { get; set; }
         public string? DirectoryPath { get; set; }
@@ -88,6 +93,22 @@ namespace ReStoreX.Core
         Fragmented,
         PartiallyOverwritten,
         Unrecoverable
+    }
+
+    public class ClusterInfo
+    {
+        public long ClusterId { get; set; }
+        public ClusterStatus Status { get; set; }
+        public string? FileName { get; set; }
+        public long Size { get; set; }
+    }
+
+    public enum ClusterStatus
+    {
+        Free,
+        Used,
+        Bad,
+        Reserved
     }
 
     public class DiskHealthInfo
@@ -116,6 +137,35 @@ namespace ReStoreX.Core
                 return DiskHealthStatus.Warning;
                 
             return DiskHealthStatus.Healthy;
+        }
+    }
+
+    public class RecoveryReport
+    {
+        public required string FileName { get; set; }
+        public long FileSize { get; set; }
+        public string? OriginalPath { get; set; }
+        public bool IsFragmented { get; set; }
+        public int FragmentCount { get; set; }
+        public bool HasBadSectors { get; set; }
+        public int BadSectorCount { get; set; }
+        public bool IsRecoverable { get; set; }
+        public bool SignatureFound { get; set; }
+
+        public string GetSuggestions()
+        {
+            var suggestions = new List<string>();
+
+            if (IsFragmented)
+                suggestions.Add($"File is fragmented into {FragmentCount} pieces.");
+
+            if (HasBadSectors)
+                suggestions.Add($"File has {BadSectorCount} bad sectors.");
+
+            if (!IsRecoverable && SignatureFound)
+                suggestions.Add("Try recovering by file signature.");
+
+            return string.Join(" ", suggestions);
         }
     }
 
@@ -182,62 +232,6 @@ namespace ReStoreX.Core
         PhysicalDamage,     // Physical damage detected
         CrosslinkedSector,  // Sector claimed by multiple files
         LostCluster         // Cluster marked bad in FAT/MFT
-    }
-
-    /// <summary>
-    /// Generic interface for all supported filesystems (FATX, FAT32, NTFS).
-    /// </summary>
-    public interface IReStoreXFileSystem
-    {
-        string Name { get; }
-        long BytesPerCluster { get; }
-        long MaxClusters { get; }
-        long TotalSpace { get; }
-        long FreeSpace { get; }
-
-        void LoadFromStream(Stream diskStream);
-        IEnumerable<FileEntry> GetFiles(string directory = "/");
-        IEnumerable<DirectoryEntry> GetDirectories(string directory = "/");
-        byte[] ReadFile(string path);
-        
-        // Recovery features
-        IEnumerable<DeletedFileEntry> ScanForDeletedFiles();
-        bool RecoverFile(DeletedFileEntry file, string destinationPath);
-        bool RecoverFileBySignature(string fileSignature, string destinationPath);
-        
-        // Disk health and analysis
-        DiskHealthInfo GetDiskHealth();
-        IEnumerable<BadSectorInfo> ScanForBadSectors();
-        bool RepairBadSectors(IEnumerable<BadSectorInfo> sectors);
-    }
-
-    /// <summary>
-    /// Represents a generic file entry.
-    /// </summary>
-    public class FileEntry
-    {
-        public required string FileName { get; set; }
-        public long FileSize { get; set; }
-        public long FirstCluster { get; set; }
-        public DateTime CreationTime { get; set; }
-        public DateTime LastWriteTime { get; set; }
-        public DateTime LastAccessTime { get; set; }
-        public FileAttributes Attributes { get; set; }
-        public bool IsCorrupted { get; set; }
-        public string? ErrorMessage { get; set; }
-    }
-
-    /// <summary>
-    /// Represents a generic directory entry.
-    /// </summary>
-    public class DirectoryEntry
-    {
-        public required string DirectoryName { get; set; }
-        public List<FileEntry> Files { get; set; } = new List<FileEntry>();
-        public List<DirectoryEntry> SubDirectories { get; set; } = new List<DirectoryEntry>();
-        public DateTime CreationTime { get; set; }
-        public DateTime LastWriteTime { get; set; }
-        public bool IsRoot { get; set; }
     }
 }
 

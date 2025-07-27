@@ -1,5 +1,6 @@
 using System;
 using System.Windows.Forms;
+using ReStoreX;
 using ReStoreX.Forms;
 
 namespace ReStoreX
@@ -14,9 +15,11 @@ namespace ReStoreX
         {
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
+            ApplicationConfiguration.Initialize();
 
-            // Launch MainWindow
-            Application.Run(new MainWindow());
+            // Create and run the main form
+            var mainForm = new MainWindow();
+            Application.Run(mainForm);
         }
     }
 }

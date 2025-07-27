@@ -1,8 +1,8 @@
 {
   "version": 2,
-  "dgSpecHash": "ZLuS48NWrEc=",
+  "dgSpecHash": "2+QHiF0Dmg4=",
   "success": true,
-  "projectFilePath": "C:\\Users\\SZ\\Desktop\\ReStoreX\\ReStoreX.csproj",
+  "projectFilePath": "C:\\Users\\SZ\\Desktop\\Project\\ReStoreX\\ReStoreX.csproj",
   "expectedPackageFiles": [
     "C:\\Users\\SZ\\.nuget\\packages\\crc32.net\\1.2.0\\crc32.net.1.2.0.nupkg.sha512",
     "C:\\Users\\SZ\\.nuget\\packages\\discutils\\0.16.13\\discutils.0.16.13.nupkg.sha512",

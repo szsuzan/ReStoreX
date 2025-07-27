@@ -10,13 +10,17 @@ using System.Threading.Tasks;
 
 namespace ReStoreX.Controls
 {
-    public class FileExplorer : UserControl
+    public partial class FileExplorer : UserControl
     {
         private IReStoreXFileSystem fileSystem = null!;
         private string currentDirectory = "/";
         private bool showDeletedFiles = false;
-        private ListView listView1 = null!;
-        private IContainer? components;
+
+        public FileExplorer()
+        {
+            InitializeComponent();
+            SetupListView();
+        }
 
         public IReStoreXFileSystem FileSystem => fileSystem;
         
@@ -36,38 +40,23 @@ namespace ReStoreX.Controls
             }
         }
 
-        public FileExplorer()
+        public FileEntry? SelectedFile
         {
-            listView1 = new ListView
+            get
             {
-                Dock = DockStyle.Fill,
-                FullRowSelect = true,
-                GridLines = true,
-                Location = new Point(0, 0),
-                Name = "listView1",
-                Size = new Size(600, 400),
-                UseCompatibleStateImageBehavior = false,
-                View = View.Details,
-                TabIndex = 0
-            };
-            
-            AutoScaleDimensions = new SizeF(7F, 15F);
-            AutoScaleMode = AutoScaleMode.Font;
-            Controls.Add(listView1);
-            Name = "FileExplorer";
-            Size = new Size(600, 400);
-
-            SetupListView();
-        }
-
-        protected override void Dispose(bool disposing)
-        {
-            if (disposing && (components != null))
-            {
-                components.Dispose();
+                if (listView1.SelectedItems.Count == 0)
+                    return null;
+                return listView1.SelectedItems[0].Tag as FileEntry;
             }
-            base.Dispose(disposing);
         }
+
+        public void ShowDeletedFiles(bool show)
+        {
+            showDeletedFiles = show;
+            PopulateFiles();
+        }
+
+
 
         private void SetupListView()
         {

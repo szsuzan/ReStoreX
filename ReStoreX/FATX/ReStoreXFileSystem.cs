@@ -16,6 +16,7 @@ namespace ReStoreX.FATX
         public long MaxClusters { get; private set; }
         public long TotalSpace { get; private set; }
         public long FreeSpace { get; private set; }
+        public bool IsReady => baseStream != null;
 
         // Internal references for partitions, volumes, etc.
         private Stream? baseStream;
@@ -81,6 +82,16 @@ namespace ReStoreX.FATX
 
             // TODO: Implement signature-based recovery
             return false;
+        }
+
+        public IEnumerable<ClusterInfo> GetClusterMap()
+        {
+            if (baseStream == null)
+                throw new InvalidOperationException("Filesystem not loaded");
+
+            var clusters = new List<ClusterInfo>();
+            // TODO: Implement FATX cluster mapping logic
+            return clusters;
         }
 
         public DiskHealthInfo GetDiskHealth()

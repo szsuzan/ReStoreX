@@ -3980,11 +3980,11 @@
   "project": {
     "version": "1.0.0",
     "restore": {
-      "projectUniqueName": "C:\\Users\\SZ\\Desktop\\ReStoreX\\ReStoreX.csproj",
+      "projectUniqueName": "C:\\Users\\SZ\\Desktop\\Project\\ReStoreX\\ReStoreX.csproj",
       "projectName": "ReStoreX",
-      "projectPath": "C:\\Users\\SZ\\Desktop\\ReStoreX\\ReStoreX.csproj",
+      "projectPath": "C:\\Users\\SZ\\Desktop\\Project\\ReStoreX\\ReStoreX.csproj",
       "packagesPath": "C:\\Users\\SZ\\.nuget\\packages\\",
-      "outputPath": "C:\\Users\\SZ\\Desktop\\ReStoreX\\obj\\",
+      "outputPath": "C:\\Users\\SZ\\Desktop\\Project\\ReStoreX\\obj\\",
       "projectStyle": "PackageReference",
       "configFilePaths": [
         "C:\\Users\\SZ\\AppData\\Roaming\\NuGet\\NuGet.Config"

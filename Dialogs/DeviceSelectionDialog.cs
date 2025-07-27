@@ -21,26 +21,46 @@ namespace ReStoreX.Dialogs
         private void LoadDevices()
         {
             listView1.Items.Clear();
-            var disks = WinApi.GetAvailablePhysicalDrives();
-            foreach (var disk in disks)
+
+            // Set up columns
+            if (listView1.Columns.Count == 0)
             {
-                var item = new ListViewItem(disk);
+                listView1.View = View.Details;
+                listView1.Columns.Add("Device", 120);
+                listView1.Columns.Add("Model", 200);
+                listView1.Columns.Add("Size", 100);
+                listView1.Columns.Add("Interface", 100);
+            }
+
+            // Get physical disks with detailed info
+            var diskInfos = DiskUtilities.GetAvailableDisks();
+            foreach (var disk in diskInfos)
+            {
+                var item = new ListViewItem(disk.DeviceId);
+                item.SubItems.Add(disk.Model);
+                item.SubItems.Add(Utility.FormatFileSize((long)disk.Size));
+                item.SubItems.Add(disk.Interface);
+                item.Tag = disk;  // Store full disk info
                 listView1.Items.Add(item);
             }
         }
 
         public string? SelectedDevice => selectedItem?.Text;
+        public DiskInfo? SelectedDiskInfo => selectedItem?.Tag as DiskInfo;
 
         private void listView1_SelectedIndexChanged(object? sender, EventArgs e)
         {
             selectedItem = listView1.SelectedItems.Count > 0 ? listView1.SelectedItems[0] : null;
-            btnOK.Enabled = selectedItem != null;
+            btnOK.Enabled = selectedItem != null && selectedItem.Tag is DiskInfo;
         }
 
         private void btnOK_Click(object? sender, EventArgs e)
         {
-            DialogResult = DialogResult.OK;
-            Close();
+            if (selectedItem?.Tag is DiskInfo)
+            {
+                DialogResult = DialogResult.OK;
+                Close();
+            }
         }
 
         private void btnCancel_Click(object? sender, EventArgs e)
@@ -65,6 +85,9 @@ namespace ReStoreX.Dialogs
             listView1.TabIndex = 0;
             listView1.UseCompatibleStateImageBehavior = false;
             listView1.View = View.Details;
+            listView1.MultiSelect = false;
+            listView1.FullRowSelect = true;
+            listView1.HideSelection = false;
             listView1.SelectedIndexChanged += listView1_SelectedIndexChanged;
             // 
             // btnOK

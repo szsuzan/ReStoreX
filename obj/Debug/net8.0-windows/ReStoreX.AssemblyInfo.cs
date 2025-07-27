@@ -13,7 +13,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyCompanyAttribute("ReStoreX")]
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+956b58239c11e504c202c79e541c5d98fa444819")]
 [assembly: System.Reflection.AssemblyProductAttribute("ReStoreX")]
 [assembly: System.Reflection.AssemblyTitleAttribute("ReStoreX")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

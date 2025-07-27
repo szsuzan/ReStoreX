@@ -1,4 +1,5 @@
 using System;
+using ReStoreX.Core;
 
 namespace ReStoreX.Controls
 {
@@ -7,13 +8,44 @@ namespace ReStoreX.Controls
     /// </summary>
     public class Volume
     {
-        public bool Mounted { get; set; } = false;
-        public long Offset { get; set; } = 0;
-        public long Length { get; set; } = 0;
+    private IDisk disk;
+    private string name;
+    private long offset;
+    private long length;
+    private IReStoreXFileSystem? fileSystem;
+    private bool mounted;
 
-        // Example usage: these values are placeholders for now.
-        public long GetUsedSpace() => Length / 2;   // Dummy: 50% used
-        public long GetFreeSpace() => Length - GetUsedSpace();
-        public long GetTotalSpace() => Length;
+    public Volume(IDisk disk, string name, long offset, long length)
+    {
+        this.disk = disk;
+        this.name = name;
+        this.offset = offset;
+        this.length = length;
+        this.mounted = false;
+    }
+
+    public string DeviceId => disk.DeviceId;
+    public string Name => name;
+    public long Offset => offset;
+    public long Length => length;
+    public bool Mounted => mounted;
+    public IReStoreXFileSystem? FileSystem => fileSystem;
+
+    public long GetUsedSpace() => FileSystem?.TotalSpace - FileSystem?.FreeSpace ?? 0;
+    public long GetFreeSpace() => FileSystem?.FreeSpace ?? 0;
+    public long GetTotalSpace() => FileSystem?.TotalSpace ?? 0;
+    public long GetClusterSize() => FileSystem?.BytesPerCluster ?? 0;
+
+    public void Mount(IReStoreXFileSystem fs)
+    {
+        fileSystem = fs;
+        mounted = true;
+    }
+
+    public void Unmount()
+    {
+        fileSystem = null;
+        mounted = false;
+    }
     }
 }

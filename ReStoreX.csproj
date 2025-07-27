@@ -28,6 +28,9 @@
     <Compile Include="ReStoreX\FATX\ReStoreXFileSystem.cs" />
     <Compile Include="ReStoreX\FAT32\FAT32FileSystem.cs" />
     <Compile Include="ReStoreX\NTFS\NTFSFileSystem.cs" />
+    <Compile Include="ReStoreX\NTFS\NtfsModel.cs" />
+    <Compile Include="ReStoreX\NTFS\NtfsFileSystemExtensions.cs" />
+    <Compile Include="ReStoreX\NTFS\MftScanner.cs" />
   </ItemGroup>
 
   <ItemGroup>

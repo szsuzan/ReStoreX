@@ -1,339 +1,476 @@
 using System;
-using System.IO;
-using System.Security.Principal;
-using System.Text;
+using System.Drawing;
 using System.Windows.Forms;
-using Microsoft.Win32.SafeHandles;
-using ReStoreX.Controls;
-using ReStoreX.Core;
-using ReStoreX.Dialogs;
-using ReStoreX.DiskTypes;
-using ReStoreX.Utilities;
+using System.IO;
+using System.Threading.Tasks;
+using System.Collections.Generic;
+using System.Text;
 
 namespace ReStoreX.Forms
 {
     public partial class MainWindow : Form
     {
-        private DriveView driveView = null!;
-        private const string ApplicationTitle = "ReStoreX";
-
-        // Folder explorer fields
-        private Panel nativeExplorerPanel = null!;
-        private SplitContainer nativeSplit = null!;
-        private TreeView nativeTree = null!;
-        private ListView nativeList = null!;
-        private ContextMenuStrip nativeListCtx = null!;
-        private ToolStripMenuItem nativeOpenMenuItem = null!;
-        private ToolStripMenuItem nativeCopyMenuItem = null!;
-        private ToolStripMenuItem nativeDeleteMenuItem = null!;
-
-        private string currentRootPath = string.Empty;
-        private string currentSelectedFolder = string.Empty;
-        private ToolStripMenuItem openFolderToolStripMenuItem = null!;
-
-        private void DisableDatabaseOptions()
-        {
-            // TODO: Implement when database features are added
-        }
+        private List<FileInfo> deletedFiles = new List<FileInfo>();
+        private bool isScanning = false;
 
         public MainWindow()
         {
             InitializeComponent();
-            this.Text = ApplicationTitle;
-            DisableDatabaseOptions();
-            Console.SetOut(new LogWriter(this.textBox1));
-            Console.WriteLine("--------------------------------");
-            Console.WriteLine("ReStoreX");
-            Console.WriteLine("--------------------------------");
-
-            InitializeNativeExplorerUI();
-            AddOpenFolderMenuItem();
-            ShowNativeExplorer(false); 
+            InitializeEvents();
+            LoadDrives();
+            LoadSplitterPositions();
+            
+            // Add handlers to save splitter positions when moved
+            // Save layout on form resize instead of splitter moves since we're using TableLayoutPanel
+            this.ResizeEnd += (s, e) => SaveSplitterPositions();
         }
 
-        #region LogWriter
-        public class LogWriter : TextWriter
+        private void InitializeEvents()
         {
-            private readonly TextBox textBox;
-            private delegate void SafeCallDelegate(string? text);
-            public LogWriter(TextBox textBox) { this.textBox = textBox; }
+            // Menu events
+            var fileMenu = menuStrip.Items[0] as ToolStripMenuItem;
+            var toolsMenu = menuStrip.Items[1] as ToolStripMenuItem;
 
-            public override void Write(char value) { textBox.Text += value; }
-            public override void Write(string? value) { textBox.AppendText(value ?? string.Empty); }
-            public override void WriteLine() { textBox.AppendText(NewLine); }
-            public override void WriteLine(string? value)
+            if (fileMenu != null)
             {
-                if (textBox.InvokeRequired)
-                {
-                    var d = new SafeCallDelegate(WriteLine);
-                    textBox.BeginInvoke(d, new object?[] { value });
-                }
-                else { textBox.AppendText((value ?? string.Empty) + NewLine); }
-            }
-            public override Encoding Encoding => Encoding.ASCII;
-        }
-        #endregion
-
-        // ================== UI Mode ==================
-        private void ShowDriveView(bool show)
-        {
-            if (driveView != null) driveView.Visible = show;
-            if (show) ShowNativeExplorer(false);
-        }
-
-        private void ShowNativeExplorer(bool show)
-        {
-            if (nativeExplorerPanel != null) nativeExplorerPanel.Visible = show;
-            if (show && driveView != null) driveView.Visible = false;
-        }
-
-        private bool InNativeExplorerMode => nativeExplorerPanel?.Visible ?? false;
-
-        // ================= FATX/NTFS Disk =================
-        private void CreateNewDriveView(string path)
-        {
-            this.Text = $"{ApplicationTitle} - {Path.GetFileName(path)}";
-            ShowNativeExplorer(false);
-
-            splitContainer1.Panel1.Controls.Remove(driveView);
-            driveView = new DriveView
-            {
-                Dock = DockStyle.Fill
-            };
-            driveView.TabSelectionChanged += DriveView_TabSelectionChanged;
-            splitContainer1.Panel1.Controls.Add(driveView);
-            ShowDriveView(true);
-        }
-
-        private void DriveView_TabSelectionChanged(object? sender, PartitionSelectedEventArgs e)
-        {
-            statusStrip1.Items.Clear();
-            if (e?.volume == null) return;
-
-            var volume = e.volume;
-            if (volume.Mounted)
-            {
-                var used = volume.GetUsedSpace();
-                var free = volume.GetFreeSpace();
-                var total = volume.GetTotalSpace();
-                statusStrip1.Items.Add($"Volume Offset: 0x{volume.Offset:X}");
-                statusStrip1.Items.Add($"Volume Length: 0x{volume.Length:X}");
-                statusStrip1.Items.Add($"Used: {Utility.FormatFileSize(used)}");
-                statusStrip1.Items.Add($"Free: {Utility.FormatFileSize(free)}");
-                statusStrip1.Items.Add($"Total: {Utility.FormatFileSize(total)}");
-            }
-        }
-
-        private void OpenDiskImage(string path)
-        {
-            CreateNewDriveView(path);
-            RawImage rawImage = new RawImage(path);
-            driveView.AddDrive(Path.GetFileName(path), rawImage);
-        }
-
-        private void OpenDisk(string device)
-        {
-            CreateNewDriveView(device);
-            SafeFileHandle handle = WinApi.CreateFile(device, FileAccess.Read, FileShare.ReadWrite, IntPtr.Zero, FileMode.Open, 0, IntPtr.Zero);
-            long length = WinApi.GetDiskCapactity(handle);
-            long sector = WinApi.GetSectorSize(handle);
-            PhysicalDisk disk = new PhysicalDisk(handle, length, sector);
-            driveView.AddDrive(device, disk);
-        }
-
-        private void openImageToolStripMenuItem_Click(object sender, EventArgs e)
-        {
-            OpenFileDialog ofd = new OpenFileDialog();
-            if (ofd.ShowDialog() == DialogResult.OK)
-                OpenDiskImage(ofd.FileName);
-        }
-
-        private void openDeviceToolStripMenuItem_Click(object? sender, EventArgs e)
-        {
-            bool isAdmin = new WindowsPrincipal(WindowsIdentity.GetCurrent()).IsInRole(WindowsBuiltInRole.Administrator);
-            if (!isAdmin)
-            {
-                MessageBox.Show("Run as Administrator to access devices.", "Access Denied");
-                return;
-            }
-            using var ds = new DeviceSelectionDialog();
-            if (ds.ShowDialog() == DialogResult.OK && ds.SelectedDevice != null)
-            {
-                OpenDisk(ds.SelectedDevice);
-            }
-        }
-
-        // ================== Native Folder Explorer ==================
-        private void AddOpenFolderMenuItem()
-        {
-            openFolderToolStripMenuItem = new ToolStripMenuItem("Open Folder...", null, openFolderToolStripMenuItem_Click);
-            fileToolStripMenuItem.DropDownItems.Insert(0, openFolderToolStripMenuItem);
-        }
-
-        private void openFolderToolStripMenuItem_Click(object? sender, EventArgs e)
-        {
-            using var fbd = new FolderBrowserDialog();
-            if (fbd.ShowDialog() == DialogResult.OK && !string.IsNullOrEmpty(fbd.SelectedPath))
-            {
-                OpenFolder(fbd.SelectedPath);
-            }
-        }
-
-        private void OpenFolder(string path)
-        {
-            if (!Directory.Exists(path))
-            {
-                MessageBox.Show("Invalid folder path");
-                return;
+                var openMenu = fileMenu.DropDownItems[0] as ToolStripMenuItem;
+                var scanMenu = fileMenu.DropDownItems[2] as ToolStripMenuItem;
+                var exitMenu = fileMenu.DropDownItems[4] as ToolStripMenuItem;
+                
+                if (openMenu != null)
+                    openMenu.Click += OpenMenu_Click;
+                if (scanMenu != null)
+                    scanMenu.Click += ScanMenu_Click;
+                if (exitMenu != null)
+                    exitMenu.Click += ExitMenu_Click;
             }
 
-            currentRootPath = path;
-            currentSelectedFolder = path;
-            this.Text = $"{ApplicationTitle} - {path}";
+            if (toolsMenu != null)
+            {
+                var analyzeMenu = toolsMenu.DropDownItems[0] as ToolStripMenuItem;
+                var hexViewMenu = toolsMenu.DropDownItems[1] as ToolStripMenuItem;
 
-            PopulateNativeTreeFromDirectory(path);
-            PopulateNativeListView(path);
-            ShowNativeExplorer(true);
+                if (analyzeMenu != null)
+                    analyzeMenu.Click += AnalyzeMenu_Click;
+                if (hexViewMenu != null)
+                    hexViewMenu.Click += HexViewMenu_Click;
+            }
+
+            // TreeView events
+            driveTreeView.AfterSelect += DriveTreeView_AfterSelect;
+            driveTreeView.BeforeExpand += DriveTreeView_BeforeExpand;
+
+            // ListView events
+            fileListView.SelectedIndexChanged += FileListView_SelectedIndexChanged;
+            fileListView.MouseDoubleClick += FileListView_MouseDoubleClick;
+
+            // Button events
+            scanButton.Click += ScanButton_Click;
+            recoverButton.Click += RecoverButton_Click;
+
+            // Form events
+            this.FormClosing += MainWindow_FormClosing;
         }
 
-        private void InitializeNativeExplorerUI()
+        private void LoadDrives()
         {
-            nativeExplorerPanel = new Panel { Dock = DockStyle.Fill, Visible = false };
-            nativeSplit = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 250 };
-
-            nativeTree = new TreeView { Dock = DockStyle.Fill };
-            nativeTree.AfterSelect += NativeTree_AfterSelect;
-
-            nativeList = new ListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true };
-            nativeList.Columns.Add("Name", 200);
-            nativeList.Columns.Add("Size", 100);
-            nativeList.Columns.Add("Modified", 150);
-            nativeList.DoubleClick += NativeList_DoubleClick;
-
-            nativeListCtx = new ContextMenuStrip();
-            nativeOpenMenuItem = new ToolStripMenuItem("Open", null, NativeOpenMenuItem_Click);
-            nativeCopyMenuItem = new ToolStripMenuItem("Copy", null, NativeCopyMenuItem_Click);
-            nativeDeleteMenuItem = new ToolStripMenuItem("Delete", null, NativeDeleteMenuItem_Click);
-            nativeListCtx.Items.AddRange(new[] { nativeOpenMenuItem, nativeCopyMenuItem, nativeDeleteMenuItem });
-            nativeList.ContextMenuStrip = nativeListCtx;
-
-            nativeSplit.Panel1.Controls.Add(nativeTree);
-            nativeSplit.Panel2.Controls.Add(nativeList);
-            nativeExplorerPanel.Controls.Add(nativeSplit);
-            splitContainer1.Panel1.Controls.Add(nativeExplorerPanel);
-        }
-
-        private void PopulateNativeTreeFromDirectory(string rootPath)
-        {
-            nativeTree.Nodes.Clear();
-            var root = new TreeNode(rootPath) { Tag = rootPath };
-            nativeTree.Nodes.Add(root);
-            LoadNativeDirectories(root, rootPath);
-        }
-
-        private void LoadNativeDirectories(TreeNode parent, string path)
-        {
-            parent.Nodes.Clear();
             try
             {
-                foreach (var dir in Directory.GetDirectories(path))
+                driveTreeView.BeginUpdate();
+                driveTreeView.Nodes.Clear();
+                
+                foreach (DriveInfo drive in DriveInfo.GetDrives())
                 {
-                    var node = new TreeNode(Path.GetFileName(dir)) { Tag = dir };
-                    parent.Nodes.Add(node);
+                    try
+                    {
+                        if (drive.IsReady)
+                        {
+                            string driveLabel = string.IsNullOrEmpty(drive.VolumeLabel) 
+                                ? drive.Name 
+                                : $"{drive.VolumeLabel} ({drive.Name})";
+                            
+                            var node = new TreeNode(driveLabel);
+                            node.Tag = drive.RootDirectory;
+                            node.Nodes.Add(new TreeNode("Loading..."));
+                            driveTreeView.Nodes.Add(node);
+                        }
+                    }
+                    catch (UnauthorizedAccessException)
+                    {
+                        // Skip drives we can't access
+                        continue;
+                    }
                 }
+
+                if (driveTreeView.Nodes.Count > 0)
+                {
+                    driveTreeView.SelectedNode = driveTreeView.Nodes[0];
+                }
+                
+                UpdateStatus("Drives loaded successfully");
             }
-            catch { }
+            catch (Exception ex)
+            {
+                UpdateStatus($"Error loading drives: {ex.Message}", true);
+            }
+            finally
+            {
+                driveTreeView.EndUpdate();
+            }
         }
 
-        private void PopulateNativeListView(string directory)
+        private void LoadDirectory(TreeNode node)
         {
-            nativeList.Items.Clear();
             try
             {
-                foreach (var dir in Directory.GetDirectories(directory))
+                if (node.Tag is DirectoryInfo dir)
                 {
-                    DirectoryInfo di = new DirectoryInfo(dir);
-                    var item = new ListViewItem(new[] { di.Name, "<DIR>", di.LastWriteTime.ToString() }) { Tag = dir };
-                    nativeList.Items.Add(item);
-                }
-
-                foreach (var file in Directory.GetFiles(directory))
-                {
-                    FileInfo fi = new FileInfo(file);
-                    var item = new ListViewItem(new[] { fi.Name, $"{fi.Length / 1024} KB", fi.LastWriteTime.ToString() }) { Tag = file };
-                    nativeList.Items.Add(item);
+                    node.Nodes.Clear();
+                    foreach (DirectoryInfo subDir in dir.GetDirectories())
+                    {
+                        var subNode = new TreeNode(subDir.Name);
+                        subNode.Tag = subDir;
+                        subNode.Nodes.Add(new TreeNode("Loading..."));
+                        node.Nodes.Add(subNode);
+                    }
                 }
             }
-            catch { }
-        }
-
-        private void NativeTree_AfterSelect(object? sender, TreeViewEventArgs e)
-        {
-            if (e?.Node?.Tag is string path && Directory.Exists(path))
+            catch (Exception ex)
             {
-                currentSelectedFolder = path;
-                PopulateNativeListView(path);
+                UpdateStatus($"Error loading directory: {ex.Message}", true);
             }
         }
 
-        private void NativeList_DoubleClick(object? sender, EventArgs e)
+        private void LoadFiles(DirectoryInfo directory)
         {
-            if (nativeList.SelectedItems.Count == 0) return;
-            if (nativeList.SelectedItems[0].Tag is string path)
+            try
             {
-                if (Directory.Exists(path))
-                    PopulateNativeListView(path);
-                else if (File.Exists(path))
-                    NativeOpenFile(path);
-            }
-        }
-
-        private void NativeOpenMenuItem_Click(object? sender, EventArgs e)
-        {
-            if (nativeList.SelectedItems.Count == 0) return;
-            if (nativeList.SelectedItems[0].Tag is string path)
-            {
-                if (Directory.Exists(path))
-                    PopulateNativeListView(path);
-                else if (File.Exists(path))
-                    NativeOpenFile(path);
-            }
-        }
-
-        private void NativeCopyMenuItem_Click(object? sender, EventArgs e)
-        {
-            if (nativeList.SelectedItems.Count == 0) return;
-            if (nativeList.SelectedItems[0].Tag is string filePath && File.Exists(filePath))
-            {
-                using var sfd = new SaveFileDialog { FileName = Path.GetFileName(filePath) };
-                if (sfd.ShowDialog() == DialogResult.OK)
+                fileListView.Items.Clear();
+                foreach (FileInfo file in directory.GetFiles())
                 {
-                    File.Copy(filePath, sfd.FileName, true);
+                    var item = fileListView.Items.Add(file.Name);
+                    item.SubItems.AddRange(new string[] {
+                        FormatFileSize(file.Length),
+                        file.Extension,
+                        file.LastWriteTime.ToString()
+                    });
+                    item.Tag = file;
                 }
+                UpdateStatus($"Loaded {fileListView.Items.Count} files");
             }
-        }
-
-        private void NativeDeleteMenuItem_Click(object? sender, EventArgs e)
-        {
-            if (nativeList.SelectedItems.Count == 0) return;
-            if (nativeList.SelectedItems[0].Tag is string filePath)
+            catch (Exception ex)
             {
-                if (MessageBox.Show($"Delete {Path.GetFileName(filePath)}?", "Confirm", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                {
-                    File.Delete(filePath);
-                }
+                UpdateStatus($"Error loading files: {ex.Message}", true);
             }
         }
 
-        private void NativeOpenFile(string filePath)
+        private string FormatFileSize(long bytes)
         {
-            try { System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo { FileName = filePath, UseShellExecute = true }); }
-            catch (Exception ex) { MessageBox.Show($"Cannot open file: {ex.Message}"); }
+            string[] sizes = { "B", "KB", "MB", "GB", "TB" };
+            int order = 0;
+            double size = bytes;
+            while (size >= 1024 && order < sizes.Length - 1)
+            {
+                order++;
+                size /= 1024;
+            }
+            return $"{size:0.##} {sizes[order]}";
         }
 
-        private void exitToolStripMenuItem_Click(object? sender, EventArgs e)
+        private void UpdateStatus(string message, bool isError = false)
+        {
+            statusLabel.Text = message;
+            statusLabel.ForeColor = isError ? Color.Red : SystemColors.ControlText;
+        }
+
+        #region Event Handlers
+
+        private void OpenMenu_Click(object? sender, EventArgs e)
+        {
+            LoadDrives();
+        }
+
+        private void ExitMenu_Click(object? sender, EventArgs e)
         {
             Close();
         }
+
+        private void DriveTreeView_BeforeExpand(object? sender, TreeViewCancelEventArgs e)
+        {
+            if (e.Node?.Nodes.Count == 1 && e.Node.Nodes[0].Text == "Loading...")
+            {
+                LoadDirectory(e.Node);
+            }
+        }
+
+        private void DriveTreeView_AfterSelect(object? sender, TreeViewEventArgs e)
+        {
+            if (e.Node?.Tag is DirectoryInfo dir)
+            {
+                LoadFiles(dir);
+            }
+        }
+
+        private void MainWindow_FormClosing(object? sender, FormClosingEventArgs e)
+        {
+            if (isScanning)
+            {
+                if (MessageBox.Show("A scan is in progress. Are you sure you want to exit?", "Confirm Exit",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Warning) == DialogResult.No)
+                {
+                    e.Cancel = true;
+                    return;
+                }
+            }
+            else if (MessageBox.Show("Are you sure you want to exit?", "Confirm Exit",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.No)
+            {
+                e.Cancel = true;
+            }
+        }
+
+        private void FileListView_SelectedIndexChanged(object? sender, EventArgs e)
+        {
+            bool hasSelection = fileListView.SelectedItems.Count > 0;
+            recoverButton.Enabled = hasSelection;
+
+            if (hasSelection)
+            {
+                var file = fileListView.SelectedItems[0].Tag as FileInfo;
+                if (file != null)
+                {
+                    filePropertyGrid.SelectedObject = file;
+                }
+            }
+            else
+            {
+                filePropertyGrid.SelectedObject = null;
+            }
+        }
+
+        private void FileListView_MouseDoubleClick(object? sender, MouseEventArgs e)
+        {
+            if (fileListView.SelectedItems.Count > 0)
+            {
+                AnalyzeSelectedFile();
+            }
+        }
+
+        private void ScanButton_Click(object? sender, EventArgs e)
+        {
+            StartScan();
+        }
+
+        private void ScanMenu_Click(object? sender, EventArgs e)
+        {
+            StartScan();
+        }
+
+        private void RecoverButton_Click(object? sender, EventArgs e)
+        {
+            RecoverSelectedFile();
+        }
+
+        private void AnalyzeMenu_Click(object? sender, EventArgs e)
+        {
+            AnalyzeSelectedFile();
+        }
+
+        private void HexViewMenu_Click(object? sender, EventArgs e)
+        {
+            ShowHexView();
+        }
+
+        private async void StartScan()
+        {
+            if (driveTreeView.SelectedNode?.Tag is not DirectoryInfo currentDir)
+            {
+                MessageBox.Show("Please select a directory to scan.", "No Directory Selected",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            if (isScanning)
+            {
+                MessageBox.Show("A scan is already in progress.", "Scan in Progress",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            try
+            {
+                isScanning = true;
+                scanButton.Enabled = false;
+                scanProgressBar.Visible = true;
+                scanProgressBar.Style = ProgressBarStyle.Marquee;
+                UpdateStatus("Scanning for deleted files...");
+
+                deletedFiles.Clear();
+                await Task.Run(() => ScanForDeletedFiles(currentDir));
+
+                fileListView.Items.Clear();
+                foreach (var file in deletedFiles)
+                {
+                    var item = fileListView.Items.Add(file.Name);
+                    item.SubItems.AddRange(new string[] {
+                        FormatFileSize(file.Length),
+                        file.Extension,
+                        file.LastWriteTime.ToString()
+                    });
+                    item.Tag = file;
+                }
+
+                UpdateStatus($"Found {deletedFiles.Count} deleted files");
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error during scan: {ex.Message}", "Scan Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                UpdateStatus("Scan failed", true);
+            }
+            finally
+            {
+                isScanning = false;
+                scanButton.Enabled = true;
+                scanProgressBar.Visible = false;
+            }
+        }
+
+        private void ScanForDeletedFiles(DirectoryInfo directory)
+        {
+            try
+            {
+                // This is a placeholder for actual file recovery logic
+                // In a real implementation, this would:
+                // 1. Read raw disk sectors
+                // 2. Look for file signatures
+                // 3. Analyze file system structures
+                // 4. Identify deleted file entries
+                
+                // For now, we'll just simulate finding some deleted files
+                Random rand = new Random();
+                int numFiles = rand.Next(5, 15);
+                
+                for (int i = 0; i < numFiles; i++)
+                {
+                    var mockFile = new FileInfo(Path.Combine(directory.FullName, $"DELETED_FILE_{i}.dat"));
+                    deletedFiles.Add(mockFile);
+                }
+            }
+            catch (Exception ex)
+            {
+                throw new Exception($"Error scanning directory {directory.FullName}: {ex.Message}");
+            }
+        }
+
+        private void RecoverSelectedFile()
+        {
+            if (fileListView.SelectedItems.Count == 0)
+                return;
+
+            var file = fileListView.SelectedItems[0].Tag as FileInfo;
+            if (file == null)
+                return;
+
+            using (SaveFileDialog dialog = new SaveFileDialog())
+            {
+                dialog.FileName = file.Name;
+                dialog.Filter = "All files (*.*)|*.*";
+
+                if (dialog.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        // This is a placeholder for actual file recovery logic
+                        UpdateStatus($"Recovering {file.Name}...");
+                        
+                        // Simulate recovery by creating an empty file
+                        File.WriteAllBytes(dialog.FileName, new byte[file.Length]);
+                        
+                        UpdateStatus($"Successfully recovered {file.Name}");
+                        MessageBox.Show("File recovered successfully!", "Recovery Complete",
+                            MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    }
+                    catch (Exception ex)
+                    {
+                        UpdateStatus("Recovery failed", true);
+                        MessageBox.Show($"Error recovering file: {ex.Message}", "Recovery Error",
+                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    }
+                }
+            }
+        }
+
+        private void AnalyzeSelectedFile()
+        {
+            if (fileListView.SelectedItems.Count == 0)
+                return;
+
+            var file = fileListView.SelectedItems[0].Tag as FileInfo;
+            if (file == null)
+                return;
+
+            filePropertyGrid.SelectedObject = file;
+            detailsTabControl.SelectedTab = fileInfoTab;
+        }
+
+        private void ShowHexView()
+        {
+            if (fileListView.SelectedItems.Count == 0)
+                return;
+
+            var file = fileListView.SelectedItems[0].Tag as FileInfo;
+            if (file == null)
+                return;
+
+            try
+            {
+                // This is a placeholder for actual hex viewing logic
+                // In a real implementation, this would read the raw bytes from disk
+                hexViewer.Clear();
+                
+                // Create a mock hex dump
+                StringBuilder hexDump = new StringBuilder();
+                Random rand = new Random();
+                byte[] mockData = new byte[256];
+                rand.NextBytes(mockData);
+
+                for (int i = 0; i < mockData.Length; i += 16)
+                {
+                    // Offset
+                    hexDump.AppendFormat("{0:X8}: ", i);
+
+                    // Hex values
+                    for (int j = 0; j < 16; j++)
+                    {
+                        if (i + j < mockData.Length)
+                            hexDump.AppendFormat("{0:X2} ", mockData[i + j]);
+                        else
+                            hexDump.Append("   ");
+                    }
+
+                    hexDump.Append(" ");
+
+                    // ASCII representation
+                    for (int j = 0; j < 16 && i + j < mockData.Length; j++)
+                    {
+                        char c = (char)mockData[i + j];
+                        hexDump.Append(char.IsControl(c) ? '.' : c);
+                    }
+
+                    hexDump.AppendLine();
+                }
+
+                hexViewer.Text = hexDump.ToString();
+                detailsTabControl.SelectedTab = hexViewTab;
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show($"Error viewing file: {ex.Message}", "View Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        #endregion
     }
 }

@@ -3,6 +3,8 @@ using System;
 using System.IO;
 using System.Collections.Generic;
 using System.Windows.Forms;
+using System.Linq;
+using ReStoreX.Utilities;
 
 namespace ReStoreX.Controls
 {
@@ -11,8 +13,10 @@ namespace ReStoreX.Controls
     /// </summary>
     public partial class DriveView : UserControl
     {
-        private IReStoreXFileSystem fileSystem = null!;
+        private IReStoreXFileSystem? fileSystem;
         private List<Volume> volumes = new List<Volume>();
+
+        public IReStoreXFileSystem? FileSystem => fileSystem;
 
         public event EventHandler<DirectoryEntry>? DirectorySelected;
         public event EventHandler<PartitionSelectedEventArgs>? TabSelectionChanged;
@@ -21,6 +25,7 @@ namespace ReStoreX.Controls
         {
             InitializeComponent();
             treeView1.AfterSelect += TreeView1_AfterSelect;
+            treeView1.BeforeExpand += TreeView1_BeforeExpand;
             partitionList.SelectedIndexChanged += PartitionList_SelectedIndexChanged;
         }
 
@@ -41,17 +46,41 @@ namespace ReStoreX.Controls
 
         private void PopulateTree()
         {
-            treeView1.Nodes.Clear();
-            var rootNode = new TreeNode($"{fileSystem.Name} ({FormatSize(fileSystem.TotalSpace - fileSystem.FreeSpace)} / {FormatSize(fileSystem.TotalSpace)})");
-            
-            foreach (var dir in fileSystem.GetDirectories("/"))
+            if (fileSystem == null) return;
+
+            treeView1.BeginUpdate();
+            try
             {
-                TreeNode node = CreateDirectoryNode(dir);
-                rootNode.Nodes.Add(node);
+                treeView1.Nodes.Clear();
+                var rootNode = new TreeNode($"{fileSystem.Name} ({Utility.FormatFileSize(fileSystem.TotalSpace - fileSystem.FreeSpace)} / {Utility.FormatFileSize(fileSystem.TotalSpace)})") 
+                { 
+                    Tag = "/",
+                    ImageKey = "folder",
+                    SelectedImageKey = "folder"
+                };
+                
+                // Add root node
+                treeView1.Nodes.Add(rootNode);
+
+                // Load initial directories
+                foreach (var dir in fileSystem.GetDirectories("/"))
+                {
+                    TreeNode node = CreateDirectoryNode(dir);
+                    rootNode.Nodes.Add(node);
+                    
+                    // Add a dummy node to show expand button
+                    if (dir.Files.Count > 0 || fileSystem.GetDirectories(dir.DirectoryName).Any())
+                    {
+                        node.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                    }
+                }
+
+                rootNode.Expand();
             }
-            
-            treeView1.Nodes.Add(rootNode);
-            rootNode.Expand();
+            finally
+            {
+                treeView1.EndUpdate();
+            }
         }
 
         private TreeNode CreateDirectoryNode(DirectoryEntry dir)
@@ -97,14 +126,9 @@ namespace ReStoreX.Controls
             }
         }
 
-        public void AddDrive(string name, object disk)
+        public void AddDrive(string name, IDisk disk)
         {
-            var volume = new Volume
-            {
-                Mounted = true,
-                Offset = 0,
-                Length = 512 * 1024 * 1024 // 512 MB dummy size
-            };
+            var volume = new Volume(disk, name, 0, disk.Length);
             volumes.Add(volume);
             partitionList.Items.Add($"{name} - Volume {volumes.Count}");
         }
@@ -114,6 +138,32 @@ namespace ReStoreX.Controls
             if (partitionList.SelectedIndex >= 0 && partitionList.SelectedIndex < volumes.Count)
             {
                 TabSelectionChanged?.Invoke(this, new PartitionSelectedEventArgs(volumes[partitionList.SelectedIndex]));
+            }
+        }
+
+        private void TreeView1_BeforeExpand(object? sender, TreeViewCancelEventArgs e)
+        {
+            if (e.Node == null || fileSystem == null) return;
+            
+            // Check if this node has only the dummy node
+            if (e.Node.Nodes.Count == 1 && e.Node.Nodes[0].Tag?.ToString() == "dummy")
+            {
+                e.Node.Nodes.Clear();
+                
+                string path = e.Node.Tag is DirectoryEntry dir ? dir.DirectoryName : e.Node.Tag?.ToString() ?? "/";
+                
+                // Load subdirectories
+                foreach (var subDir in fileSystem.GetDirectories(path))
+                {
+                    TreeNode node = CreateDirectoryNode(subDir);
+                    e.Node.Nodes.Add(node);
+                    
+                    // Add a dummy node to show expand button if there are files or subdirectories
+                    if (subDir.Files.Count > 0 || fileSystem.GetDirectories(subDir.DirectoryName).Any())
+                    {
+                        node.Nodes.Add(new TreeNode("Loading...") { Tag = "dummy" });
+                    }
+                }
             }
         }
     }
