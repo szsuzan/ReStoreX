@@ -1,0 +1,9 @@
+fastapi
+uvicorn[standard]
+python-multipart
+websockets
+pydantic
+psutil
+aiofiles
+python-magic-bin
+Pillow
