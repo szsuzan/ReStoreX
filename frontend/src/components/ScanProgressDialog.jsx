@@ -52,7 +52,7 @@ export function ScanProgressDialog({ isOpen, onClose, onCancel, progress }) {
             </svg>
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-center">
-                <div className="text-2xl font-bold text-gray-900">{progress.progress}%</div>
+                <div className="text-2xl font-bold text-gray-900">{Number(progress.progress).toFixed(2)}%</div>
                 <div className="text-xs text-gray-500">Complete</div>
               </div>
             </div>
@@ -63,7 +63,7 @@ export function ScanProgressDialog({ isOpen, onClose, onCancel, progress }) {
         <div className="space-y-4 mb-6">
           <div className="flex items-center gap-3 text-sm">
             <HardDrive className="w-4 h-4 text-blue-600" />
-            <span className="text-gray-600">Sector:</span>
+            <span className="text-gray-600">Sectors scanned:</span>
             <span className="font-mono text-gray-800">
               {progress.currentSector.toLocaleString()} / {progress.totalSectors.toLocaleString()}
             </span>
@@ -86,7 +86,7 @@ export function ScanProgressDialog({ isOpen, onClose, onCancel, progress }) {
         <div className="mb-6">
           <div className="flex justify-between text-xs text-gray-600 mb-2">
             <span>Scanning sectors...</span>
-            <span>{progress.progress}%</span>
+            <span>{Number(progress.progress).toFixed(2)}%</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
             <div 

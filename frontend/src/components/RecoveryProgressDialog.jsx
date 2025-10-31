@@ -52,7 +52,7 @@ export function RecoveryProgressDialog({ isOpen, onClose, onCancel, progress }) 
             </svg>
             <div className="absolute inset-0 flex items-center justify-center">
               <div className="text-center">
-                <div className="text-2xl font-bold text-gray-900">{progress.progress}%</div>
+                <div className="text-2xl font-bold text-gray-900">{Number(progress.progress).toFixed(2)}%</div>
                 <div className="text-xs text-gray-500">Recovered</div>
               </div>
             </div>
@@ -90,7 +90,7 @@ export function RecoveryProgressDialog({ isOpen, onClose, onCancel, progress }) 
         <div className="mb-6">
           <div className="flex justify-between text-xs text-gray-600 mb-2">
             <span>Recovery progress</span>
-            <span>{progress.progress}%</span>
+            <span>{Number(progress.progress).toFixed(2)}%</span>
           </div>
           <div className="w-full bg-gray-200 rounded-full h-2">
             <div 

@@ -4,7 +4,7 @@ from contextlib import asynccontextmanager
 import logging
 
 from app.config import settings
-from app.routes import drives, scan, recovery, files, explorer
+from app.routes import drives, scan, recovery, files, explorer, system
 from app.services.websocket_manager import websocket_manager
 
 # Configure logging
@@ -48,6 +48,7 @@ app.include_router(scan.router, prefix="/api", tags=["scan"])
 app.include_router(recovery.router, prefix="/api", tags=["recovery"])
 app.include_router(files.router, prefix="/api", tags=["files"])
 app.include_router(explorer.router, prefix="/api", tags=["explorer"])
+app.include_router(system.router, prefix="/api", tags=["system"])
 
 
 @app.get("/api/health")

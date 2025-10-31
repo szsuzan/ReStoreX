@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/SideBar';
 import { Header } from './components/Header';
@@ -11,6 +11,8 @@ import { RecoveryProgressDialog } from './components/RecoveryProgressDialog';
 import { DriveSelectionDialog } from './components/DriveSelectionDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { ExplorerDialog } from './components/ExplorerDialog';
+import { ScanReportsPanel } from './components/ScanReportsPanel';
+import { NotificationBox } from './components/NotificationBox';
 import { apiService } from './services/apiService';
 import { useWebSocket } from './hooks/useWebSocket';
 
@@ -33,6 +35,18 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   const [showExplorer, setShowExplorer] = useState(false);
   const [selectedScanType, setSelectedScanType] = useState('normal'); // Track selected scan type
+  const [scanMetadata, setScanMetadata] = useState(null); // Store scan reports data
+  const [currentScanTypeForReports, setCurrentScanTypeForReports] = useState(''); // Track scan type for reports
+  const [notification, setNotification] = useState(null); // Notification state
+  const [scanCompletedIds, setScanCompletedIds] = useState(new Set()); // Track completed scans to avoid duplicate notifications
+  const [notificationTimeoutId, setNotificationTimeoutId] = useState(null); // Track notification timeout
+  
+  // Use ref to track ongoing loadScanResults operations to prevent race conditions
+  const loadingScanIds = useRef(new Set());
+  
+  // Multiple scan tabs management
+  const [scanTabs, setScanTabs] = useState([]); // Array of {id, scanId, scanType, files, metadata, timestamp}
+  const [activeTabId, setActiveTabId] = useState(null); // Currently active tab
   
   const [settings, setSettings] = useState({
     general: {
@@ -107,14 +121,47 @@ function App() {
     totalRecoveryAttempts: 0
   });
 
+  // Recent activities tracking
+  const [recentActivities, setRecentActivities] = useState([]);
+
   // Load drives on mount
   useEffect(() => {
     loadDrives();
+    
+    // Handle browser back/forward navigation
+    const handlePopState = (event) => {
+      if (event.state && event.state.view) {
+        setCurrentView(event.state.view);
+      }
+    };
+    
+    window.addEventListener('popstate', handlePopState);
+    
+    // Set initial state
+    window.history.replaceState({ view: 'dashboard' }, '', window.location.pathname);
+    
+    return () => {
+      window.removeEventListener('popstate', handlePopState);
+    };
   }, []);
+
+  // Helper to navigate between views with browser history support
+  const navigateToView = (view) => {
+    if (view !== currentView) {
+      setCurrentView(view);
+      window.history.pushState({ view }, '', window.location.pathname);
+      
+      // Reset activeScanType when navigating to dashboard so all scan options are visible
+      if (view === 'dashboard') {
+        setCurrentScanTypeForReports('');
+      }
+    }
+  };
 
   // Subscribe to WebSocket events
   useEffect(() => {
     const unsubscribeScan = subscribe('scan_progress', (data) => {
+      console.log('WebSocket scan_progress update:', data);
       setScanProgress(prev => ({
         ...prev,
         progress: data.progress || 0,
@@ -127,18 +174,25 @@ function App() {
 
       // If scan completed, load the results and close dialog
       if (data.status === 'completed' && currentScanId) {
-        console.log('Scan completed via WebSocket, loading results...');
-        loadScanResults(currentScanId);
-        // Update statistics
-        setStatistics(prev => ({
-          ...prev,
-          totalScansCompleted: prev.totalScansCompleted + 1,
-          lastScanDate: new Date()
-        }));
+        console.log('Scan completed via WebSocket, loading results for scanId:', currentScanId);
+        
+        // Check if we've already handled this scan completion
+        if (!scanCompletedIds.has(currentScanId)) {
+          setScanCompletedIds(prev => new Set(prev).add(currentScanId));
+          loadScanResults(currentScanId);
+          
+          // Update statistics
+          setStatistics(prev => ({
+            ...prev,
+            totalScansCompleted: prev.totalScansCompleted + 1,
+            lastScanDate: new Date()
+          }));
+        }
+        
         // Close the scan progress dialog after a short delay
         setTimeout(() => {
           setShowScanProgress(false);
-        }, 1000);
+        }, 1500);
       }
     });
 
@@ -175,7 +229,7 @@ function App() {
         // Close the recovery progress dialog after a short delay
         setTimeout(() => {
           setShowRecoveryProgress(false);
-          alert(`Recovery completed successfully!\n\n${recoveredCount} files recovered to:\n${settings.general.defaultOutputPath}`);
+          showNotification('success', 'Recovery Completed', `${recoveredCount} files recovered to:\n${settings.general.defaultOutputPath}`);
         }, 1000);
       }
     });
@@ -185,6 +239,32 @@ function App() {
       unsubscribeRecovery();
     };
   }, [subscribe, currentScanId]);
+
+  // Helper function to show notifications
+  const showNotification = (type, title, message) => {
+    // Clear any existing notification timeout
+    if (notificationTimeoutId) {
+      clearTimeout(notificationTimeoutId);
+    }
+    
+    setNotification({ type, title, message });
+    
+    // Auto-dismiss after 5 seconds
+    const timeoutId = setTimeout(() => {
+      setNotification(null);
+      setNotificationTimeoutId(null);
+    }, 5000);
+    
+    setNotificationTimeoutId(timeoutId);
+  };
+
+  // Helper function to add recent activity
+  const addRecentActivity = (activity) => {
+    setRecentActivities(prev => {
+      const newActivities = [activity, ...prev].slice(0, 10); // Keep only last 10
+      return newActivities;
+    });
+  };
 
   // API Functions
   const loadDrives = async () => {
@@ -197,7 +277,7 @@ function App() {
     } catch (error) {
       console.error('Failed to load drives:', error);
       // Show error to user
-      alert(`Failed to load drives: ${error.message}\n\nPlease make sure the backend server is running on http://localhost:8000`);
+      showNotification('error', 'Failed to Load Drives', `${error.message}\n\nPlease make sure the backend server is running on http://localhost:8000`);
     } finally {
       setDrivesLoading(false);
     }
@@ -206,17 +286,219 @@ function App() {
   const loadScanResults = async (scanId) => {
     try {
       console.log('Loading scan results for scan:', scanId);
+      
+      // Check if this scanId is already being loaded
+      if (loadingScanIds.current.has(scanId)) {
+        console.log('Already loading results for scanId:', scanId, '- skipping duplicate request');
+        return;
+      }
+      
+      // Mark this scanId as loading
+      loadingScanIds.current.add(scanId);
+      
+      // Use functional update to check for existing tab with latest state
+      let existingTabId = null;
+      setScanTabs(prev => {
+        const existingTab = prev.find(tab => tab.scanId === scanId);
+        if (existingTab) {
+          existingTabId = existingTab.id;
+        }
+        return prev;
+      });
+      
+      // If tab already exists, just switch to it
+      if (existingTabId) {
+        console.log('Tab already exists for scanId:', scanId, '- switching to existing tab');
+        loadingScanIds.current.delete(scanId);
+        switchToTab(existingTabId);
+        return;
+      }
+      
+      // Get scan status to check for metadata (health reports, etc.)
+      const scanStatus = await apiService.getScanStatus(scanId);
+      console.log('Scan status:', scanStatus);
+      
       const results = await apiService.getScanResults(scanId, {});
       console.log('Scan results loaded:', results.length, 'files');
+      
+      // Extract metadata from scan status
+      const metadata = scanStatus.metadata || {};
+      console.log('Scan metadata:', metadata);
+      
+      // Create a new tab for this scan
+      const newTab = {
+        id: Date.now(), // Unique tab ID
+        scanId: scanId,
+        scanType: scanStatus.scan_type || 'normal',
+        files: results,
+        metadata: Object.keys(metadata).length > 0 ? metadata : null,
+        timestamp: new Date(),
+        name: getScanTabName(scanStatus.scan_type, results.length)
+      };
+      
+      // Add the new tab and set it as active using functional update to prevent race conditions
+      setScanTabs(prev => {
+        // Double-check if tab was added by another concurrent call
+        const alreadyExists = prev.find(tab => tab.scanId === scanId);
+        if (alreadyExists) {
+          console.log('Tab was created by concurrent call, skipping duplicate');
+          return prev;
+        }
+        return [...prev, newTab];
+      });
+      setActiveTabId(newTab.id);
+      
+      // Remove from loading set
+      loadingScanIds.current.delete(scanId);
+      
+      // Update current view data with the new tab's data
       setFiles(results);
       setScanResults(generateScanResultsTree(results));
+      setScanMetadata(newTab.metadata);
+      setCurrentScanTypeForReports(newTab.scanType);
       
-      // Switch to files view and clear filters to show all results
-      setCurrentView('files');
+      // Check if this is a health scan (no files but has health report)
+      if (results.length === 0 && scanStatus.status === 'completed') {
+        console.log('Scan completed with no files - might be a health/diagnostic scan');
+        navigateToView('files');
+        
+        // If there's a health report, show it in the reports view
+        if (metadata.health_report) {
+          showNotification('success', 'Health Scan Completed', 'View the Health Report below for detailed analysis.');
+          
+          // Add to recent activities
+          addRecentActivity({
+            id: Date.now(),
+            type: 'health_scan',
+            icon: 'info',
+            title: 'Drive health check completed',
+            description: `Status: ${metadata.health_report.checks?.filter(c => c.status === 'pass').length || 0} checks passed`,
+            timestamp: new Date()
+          });
+        } else {
+          // Show a notification for other diagnostic scans
+          showNotification('success', 'Scan Completed', 'This scan type performs analysis without recovering files.\nCheck the scan logs for detailed information.');
+          
+          // Add to recent activities
+          const scanTypeNames = {
+            cluster: 'Cluster analysis',
+            forensic: 'Forensic analysis',
+            signature: 'Signature scan'
+          };
+          addRecentActivity({
+            id: Date.now(),
+            type: 'diagnostic_scan',
+            icon: 'info',
+            title: `${scanTypeNames[newTab.scanType] || 'Diagnostic scan'} completed`,
+            description: 'Analysis complete, check reports for details',
+            timestamp: new Date()
+          });
+        }
+        return;
+      }
+      
+      // Switch to files view and reset ALL filters to show all results
+      navigateToView('files');
       setSelectedCategory('All Files');
-      setFilterOptions(prev => ({ ...prev, fileType: '' }));
+      setFilterOptions({
+        fileType: '', // Clear file type filter to show all types
+        recoveryChances: ['High', 'Average', 'Low', 'Unknown'],
+        sortBy: 'name',
+        sortOrder: 'asc',
+        searchQuery: '',
+      });
+      
+      // Show success notification
+      showNotification('success', 'Scan Completed Successfully', `Found ${results.length} recoverable files.`);
+      
+      // Add to recent activities
+      const scanTypeNames = {
+        normal: 'Normal scan',
+        deep: 'Deep scan',
+        cluster: 'Cluster scan',
+        health: 'Health scan',
+        signature: 'Signature scan',
+        forensic: 'Forensic scan'
+      };
+      addRecentActivity({
+        id: Date.now(),
+        type: 'scan_completed',
+        icon: 'success',
+        title: `${scanTypeNames[newTab.scanType] || 'Scan'} completed`,
+        description: `Found ${results.length} recoverable files`,
+        timestamp: new Date()
+      });
+      
+      console.log('Switched to files view with', results.length, 'files');
     } catch (error) {
       console.error('Failed to load scan results:', error);
+      // Remove from loading set on error
+      loadingScanIds.current.delete(scanId);
+      showNotification('error', 'Error Loading Results', error.message);
+    }
+  };
+
+  // Helper function to generate tab names
+  const getScanTabName = (scanType, fileCount) => {
+    const typeNames = {
+      normal: 'Normal',
+      deep: 'Deep',
+      cluster: 'Cluster',
+      health: 'Health',
+      signature: 'Signature',
+      forensic: 'Forensic'
+    };
+    
+    const typeName = typeNames[scanType] || 'Scan';
+    
+    if (fileCount > 0) {
+      return `${typeName} (${fileCount} files)`;
+    } else {
+      return `${typeName} Report`;
+    }
+  };
+
+  // Function to switch to a different tab
+  const switchToTab = (tabId) => {
+    const tab = scanTabs.find(t => t.id === tabId);
+    if (tab) {
+      setActiveTabId(tabId);
+      setFiles(tab.files);
+      setScanResults(generateScanResultsTree(tab.files));
+      setScanMetadata(tab.metadata);
+      setCurrentScanTypeForReports(tab.scanType);
+      setSelectedCategory('All Files');
+      setFilterOptions({
+        fileType: '',
+        recoveryChances: ['High', 'Average', 'Low', 'Unknown'],
+        sortBy: 'name',
+        sortOrder: 'asc',
+        searchQuery: '',
+      });
+    }
+  };
+
+  // Function to close a tab
+  const closeTab = (tabId) => {
+    const tabIndex = scanTabs.findIndex(t => t.id === tabId);
+    const newTabs = scanTabs.filter(t => t.id !== tabId);
+    setScanTabs(newTabs);
+    
+    // If closing the active tab, switch to another tab
+    if (tabId === activeTabId) {
+      if (newTabs.length > 0) {
+        // Switch to the previous tab or the first one
+        const newActiveTab = tabIndex > 0 ? newTabs[tabIndex - 1] : newTabs[0];
+        switchToTab(newActiveTab.id);
+      } else {
+        // No more tabs, clear everything
+        setActiveTabId(null);
+        setFiles([]);
+        setScanResults([]);
+        setScanMetadata(null);
+        setCurrentScanTypeForReports('');
+        navigateToView('dashboard');
+      }
     }
   };
 
@@ -327,7 +609,7 @@ function App() {
   };
 
   const handleCategorySelect = (category) => {
-    setCurrentView('files');
+    navigateToView('files');
     setSelectedCategory(category);
     if (['RAW', 'PNG', 'JPG', 'HEIC', 'AI', 'PDF', 'MP4'].includes(category)) {
       setFilterOptions(prev => ({ ...prev, fileType: category }));
@@ -338,7 +620,7 @@ function App() {
 
   const handleStartNewScan = (scanType = 'normal') => {
     console.log('handleStartNewScan called with scan type:', scanType);
-    setCurrentView('files');
+    navigateToView('files');
     // Store the selected scan type for the drive selection dialog
     setSelectedScanType(scanType);
     setShowDriveSelection(true);
@@ -371,25 +653,35 @@ function App() {
       const pollInterval = setInterval(async () => {
         try {
           const status = await apiService.getScanStatus(response.scanId);
-          console.log('Scan status update:', status);
+          console.log('Scan status update (polling):', status);
           if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
             clearInterval(pollInterval);
             if (status.status === 'completed') {
-              console.log('Scan completed, loading results...');
-              await loadScanResults(response.scanId);
-              // Update statistics
-              setStatistics(prev => ({
-                ...prev,
-                totalScansCompleted: prev.totalScansCompleted + 1,
-                lastScanDate: new Date()
-              }));
+              console.log('Scan completed (via polling), loading results...');
+              
+              // Check if we've already handled this scan completion
+              if (!scanCompletedIds.has(response.scanId)) {
+                setScanCompletedIds(prev => new Set(prev).add(response.scanId));
+                await loadScanResults(response.scanId);
+                
+                // Update statistics
+                setStatistics(prev => ({
+                  ...prev,
+                  totalScansCompleted: prev.totalScansCompleted + 1,
+                  lastScanDate: new Date()
+                }));
+              }
+              
               // Close dialog and navigate to files view
               setTimeout(() => {
                 setShowScanProgress(false);
-              }, 1000);
+              }, 1500);
             } else if (status.status === 'failed') {
               setShowScanProgress(false);
-              alert('Scan failed: ' + (status.error || 'Unknown error'));
+              showNotification('error', 'Scan Failed', status.error || 'Unknown error');
+            } else if (status.status === 'cancelled') {
+              setShowScanProgress(false);
+              showNotification('warning', 'Scan Cancelled', 'The scan was cancelled by user.');
             }
           }
         } catch (error) {
@@ -399,7 +691,7 @@ function App() {
       }, 2000);
     } catch (error) {
       console.error('Failed to start scan:', error);
-      alert('Failed to start scan: ' + error.message);
+      showNotification('error', 'Failed to Start Scan', error.message);
     }
   };
 
@@ -408,7 +700,7 @@ function App() {
     console.log('handleRecover called. Total files:', files.length, 'Selected files:', selectedFiles.length);
     
     if (selectedFiles.length === 0) {
-      alert('Please select files to recover');
+      showNotification('warning', 'No Files Selected', 'Please select files to recover');
       return;
     }
     
@@ -475,7 +767,17 @@ function App() {
               // Close dialog and show success
               setTimeout(() => {
                 setShowRecoveryProgress(false);
-                alert(`Recovery completed successfully!\n\n${recoveredCount} files recovered to:\n${settings.general.defaultOutputPath}`);
+                showNotification('success', 'Recovery Completed', `${recoveredCount} files recovered to:\n${settings.general.defaultOutputPath}`);
+                
+                // Add to recent activities
+                addRecentActivity({
+                  id: Date.now(),
+                  type: 'recovery_completed',
+                  icon: 'success',
+                  title: 'Files recovered successfully',
+                  description: `${recoveredCount} files recovered (${formatBytes(recoveredSize)})`,
+                  timestamp: new Date()
+                });
               }, 1000);
             } else if (status.status === 'failed') {
               setShowRecoveryProgress(false);
@@ -484,7 +786,7 @@ function App() {
                 ...prev,
                 totalRecoveryAttempts: prev.totalRecoveryAttempts + 1
               }));
-              alert('Recovery failed: ' + (status.error || 'Unknown error'));
+              showNotification('error', 'Recovery Failed', status.error || 'Unknown error');
             }
           }
         } catch (error) {
@@ -494,7 +796,7 @@ function App() {
       }, 2000);
     } catch (error) {
       console.error('Failed to start recovery:', error);
-      alert('Failed to start recovery: ' + error.message);
+      showNotification('error', 'Failed to Start Recovery', error.message);
     }
   };
 
@@ -529,7 +831,7 @@ function App() {
       setFiles(prev => prev.map(f =>
         f.id === fileId ? { ...f, status: 'found' } : f
       ));
-      alert('Failed to recover file: ' + error.message);
+      showNotification('error', 'Failed to Recover File', error.message);
     }
   };
 
@@ -560,14 +862,29 @@ function App() {
 
   return (
     <div className="h-screen bg-gray-50 flex flex-col">
+      {/* Notification Box */}
+      {notification && (
+        <NotificationBox
+          type={notification.type}
+          title={notification.title}
+          message={notification.message}
+          onClose={() => {
+            if (notificationTimeoutId) {
+              clearTimeout(notificationTimeoutId);
+              setNotificationTimeoutId(null);
+            }
+            setNotification(null);
+          }}
+        />
+      )}
+
       {/* Window Header */}
       <Header 
-        scanStatus="Scan completed successfully"
+        scanStatus={currentView === 'dashboard' ? 'Ready' : (scanResults.length > 0 ? `${files.length} files found` : 'Ready')}
         searchQuery={filterOptions.searchQuery}
         onSearchChange={(query) => setFilterOptions(prev => ({ ...prev, searchQuery: query }))}
-        onMinimize={() => handleWindowAction('minimize')}
-        onMaximize={() => handleWindowAction('maximize')}
-        onClose={() => handleWindowAction('close')}
+        onNavigateToDashboard={() => navigateToView('dashboard')}
+        showSearch={currentView !== 'dashboard'}
       />
 
       {/* Main Content */}
@@ -581,9 +898,13 @@ function App() {
           onToggleCollapse={() => setSidebarCollapsed(!sidebarCollapsed)}
           onStartNewScan={handleStartNewScan}
           currentView={currentView}
-          onViewChange={setCurrentView}
+          onViewChange={navigateToView}
           onShowInExplorer={handleShowInExplorer}
           onOpenSettings={handleOpenSettings}
+          scanTabs={scanTabs}
+          activeTabId={activeTabId}
+          onSwitchTab={switchToTab}
+          onCloseTab={closeTab}
         />
 
         {/* Main Content Area */}
@@ -593,38 +914,57 @@ function App() {
             drives={drives}
             drivesLoading={drivesLoading}
             statistics={statistics}
+            activeScanType={currentScanTypeForReports}
+            recentActivities={recentActivities}
           />
         ) : (
           <div className="flex-1 flex flex-col">
-            {/* Filter Bar */}
-            <FilterBar
-              filterOptions={filterOptions}
-              onFilterChange={setFilterOptions}
-              fileCount={filteredFiles.length}
-              totalSize="4.21 MB"
-              viewMode={viewMode}
-              onViewModeChange={setViewMode}
-            />
+            {/* Scan Reports Panel - Shows FIRST when there's metadata (health/cluster/forensic) */}
+            {scanMetadata && (
+              <div className="border-b border-gray-200 bg-gray-50">
+                <ScanReportsPanel 
+                  scanMetadata={scanMetadata}
+                  scanType={currentScanTypeForReports}
+                />
+              </div>
+            )}
+            
+            {/* Only show Filter Bar and File Grid if there are files (not for health/cluster/forensic scans) */}
+            {files.length > 0 && (
+              <>
+                {/* Filter Bar */}
+                <FilterBar
+                  filterOptions={filterOptions}
+                  onFilterChange={setFilterOptions}
+                  fileCount={filteredFiles.length}
+                  totalSize="4.21 MB"
+                  viewMode={viewMode}
+                  onViewModeChange={setViewMode}
+                />
 
-            {/* File Grid */}
-            <div className="flex-1 overflow-y-auto bg-gray-50">
-              <FileGrid
-                files={filteredFiles}
-                onFileSelect={setSelectedFileId}
-                onFileToggle={handleFileToggle}
-                selectedFileId={selectedFileId}
-                viewMode={viewMode}
+                {/* File Grid */}
+                <div className="flex-1 overflow-y-auto bg-gray-50">
+                  <FileGrid
+                    files={filteredFiles}
+                    onFileSelect={setSelectedFileId}
+                    onFileToggle={handleFileToggle}
+                    selectedFileId={selectedFileId}
+                    viewMode={viewMode}
+                  />
+                </div>
+              </>
+            )}
+
+            {/* Footer - Only show when there are files */}
+            {files.length > 0 && (
+              <Footer
+                selectedCount={selectedFiles.length}
+                totalSize={formatBytes(totalSelectedSize)}
+                totalFiles={files.length}
+                onRecover={handleRecover}
+                onSelectOutputFolder={handleSelectOutputFolder}
               />
-            </div>
-
-            {/* Footer */}
-            <Footer
-              selectedCount={selectedFiles.length}
-              totalSize={formatBytes(totalSelectedSize)}
-              totalFiles={files.length}
-              onRecover={handleRecover}
-              onSelectOutputFolder={handleSelectOutputFolder}
-            />
+            )}
           </div>
         )}
 

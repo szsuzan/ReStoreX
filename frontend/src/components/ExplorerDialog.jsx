@@ -15,8 +15,10 @@ import {
   FileText,
   Video,
   Music,
-  Archive
+  Archive,
+  AlertCircle
 } from 'lucide-react';
+import { apiService } from '../services/apiService';
 
 /**
  * @param {Object} props
@@ -29,6 +31,7 @@ export function ExplorerDialog({ isOpen, onClose, initialPath = 'C:\\RecoveredFi
   const [files, setFiles] = useState([]);
   const [selectedItems, setSelectedItems] = useState(new Set());
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
@@ -38,71 +41,21 @@ export function ExplorerDialog({ isOpen, onClose, initialPath = 'C:\\RecoveredFi
 
   const loadDirectory = async (path) => {
     setLoading(true);
+    setError(null);
     try {
-      // Simulate loading directory contents
-      // In production, this would call your backend API
-      await new Promise(resolve => setTimeout(resolve, 500));
+      console.log('Loading directory:', path);
+      const response = await apiService.getDirectoryContents(path);
+      console.log('Directory contents:', response);
       
-      const mockFiles = [
-        {
-          id: '1',
-          name: 'Images',
-          type: 'folder',
-          size: null,
-          dateModified: '12/15/2023 2:30 PM',
-          path: `${path}\\Images`,
-          itemCount: 2847
-        },
-        {
-          id: '2',
-          name: 'Documents',
-          type: 'folder',
-          size: null,
-          dateModified: '12/15/2023 2:30 PM',
-          path: `${path}\\Documents`,
-          itemCount: 156
-        },
-        {
-          id: '3',
-          name: 'Videos',
-          type: 'folder',
-          size: null,
-          dateModified: '12/15/2023 2:30 PM',
-          path: `${path}\\Videos`,
-          itemCount: 23
-        },
-        {
-          id: '4',
-          name: 'photo_2023-01-18_14-01-22.raw',
-          type: 'file',
-          extension: 'raw',
-          size: '218 KB',
-          dateModified: '1/18/2023 12:01 PM',
-          path: `${path}\\photo_2023-01-18_14-01-22.raw`
-        },
-        {
-          id: '5',
-          name: 'document_backup.pdf',
-          type: 'file',
-          extension: 'pdf',
-          size: '1.2 MB',
-          dateModified: '2/14/2023 3:15 PM',
-          path: `${path}\\document_backup.pdf`
-        },
-        {
-          id: '6',
-          name: 'recovery_log.txt',
-          type: 'file',
-          extension: 'txt',
-          size: '45 KB',
-          dateModified: '12/15/2023 2:30 PM',
-          path: `${path}\\recovery_log.txt`
-        }
-      ];
-      
-      setFiles(mockFiles);
-    } catch (error) {
-      console.error('Failed to load directory:', error);
+      if (response && response.items) {
+        setFiles(response.items);
+      } else {
+        setFiles([]);
+      }
+    } catch (err) {
+      console.error('Failed to load directory:', err);
+      setError(err.message || 'Failed to load directory contents');
+      setFiles([]);
     } finally {
       setLoading(false);
     }
@@ -171,10 +124,13 @@ export function ExplorerDialog({ isOpen, onClose, initialPath = 'C:\\RecoveredFi
     setSelectedItems(newSelected);
   };
 
-  const openInSystemExplorer = () => {
-    // This would call your C++ backend to open the folder in Windows Explorer
-    console.log(`Opening ${currentPath} in Windows Explorer`);
-    // Example: window.electronAPI?.openPath(currentPath);
+  const openInSystemExplorer = async () => {
+    try {
+      console.log(`Opening ${currentPath} in Windows Explorer`);
+      await apiService.openInSystemExplorer(currentPath);
+    } catch (error) {
+      console.error('Failed to open in system explorer:', error);
+    }
   };
 
   const copyPath = () => {
@@ -273,6 +229,29 @@ export function ExplorerDialog({ isOpen, onClose, initialPath = 'C:\\RecoveredFi
                 <RefreshCw className="w-5 h-5 animate-spin" />
                 <span>Loading directory...</span>
               </div>
+            </div>
+          ) : error ? (
+            <div className="flex flex-col items-center justify-center h-full text-center p-8">
+              <AlertCircle className="w-12 h-12 text-red-500 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Error Loading Directory</h3>
+              <p className="text-sm text-gray-600 mb-4">{error}</p>
+              <button
+                onClick={() => loadDirectory(currentPath)}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+              >
+                Try Again
+              </button>
+            </div>
+          ) : files.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-center p-8">
+              <Folder className="w-16 h-16 text-gray-300 mb-4" />
+              <h3 className="text-lg font-semibold text-gray-900 mb-2">Empty Directory</h3>
+              <p className="text-sm text-gray-600">
+                No files have been recovered to this location yet.
+              </p>
+              <p className="text-xs text-gray-500 mt-2">
+                Recover some files to see them here!
+              </p>
             </div>
           ) : (
             <div className="p-4">

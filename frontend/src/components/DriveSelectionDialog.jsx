@@ -61,7 +61,7 @@ export function DriveSelectionDialog({ isOpen, onClose, onStartScan, drives, ini
   };
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+    <div className="fixed inset-0 bg-black bg-opacity-20 flex items-center justify-center z-50 backdrop-blur-sm">
       <div className="bg-white rounded-xl shadow-2xl p-8 w-[500px] max-w-[90vw]">
         <div className="flex items-center justify-between mb-6">
           <h3 className="text-xl font-semibold text-gray-900">Select Drive to Scan</h3>
@@ -117,45 +117,47 @@ export function DriveSelectionDialog({ isOpen, onClose, onStartScan, drives, ini
           )}
         </div>
 
-        {/* Scan Type Selection */}
-        <div className="mb-6">
-          <h4 className="text-sm font-semibold text-gray-800 mb-3">Scan Type</h4>
-          <div className="space-y-3">
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="radio"
-                name="scanType"
-                value="normal"
-                checked={scanType === 'normal'}
-                onChange={(e) => setScanType(e.target.value)}
-                className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500 mt-0.5"
-              />
-              <div>
-                <div className="font-medium text-gray-900">Normal Scan</div>
-                <div className="text-sm text-gray-600">
-                  Fast scan for recently deleted files (5-15 minutes)
+        {/* Scan Type Selection - Only show for normal/deep scans */}
+        {!['cluster', 'health', 'signature', 'forensic'].includes(scanType) && (
+          <div className="mb-6">
+            <h4 className="text-sm font-semibold text-gray-800 mb-3">Scan Type</h4>
+            <div className="space-y-3">
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="radio"
+                  name="scanType"
+                  value="normal"
+                  checked={scanType === 'normal'}
+                  onChange={(e) => setScanType(e.target.value)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500 mt-0.5"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">Normal Scan</div>
+                  <div className="text-sm text-gray-600">
+                    Fast scan for recently deleted files (5-15 minutes)
+                  </div>
                 </div>
-              </div>
-            </label>
-            
-            <label className="flex items-start gap-3 cursor-pointer">
-              <input
-                type="radio"
-                name="scanType"
-                value="deep"
-                checked={scanType === 'deep'}
-                onChange={(e) => setScanType(e.target.value)}
-                className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500 mt-0.5"
-              />
-              <div>
-                <div className="font-medium text-gray-900">Deep Scan</div>
-                <div className="text-sm text-gray-600">
-                  Comprehensive scan for all recoverable files (30+ minutes)
+              </label>
+              
+              <label className="flex items-start gap-3 cursor-pointer">
+                <input
+                  type="radio"
+                  name="scanType"
+                  value="deep"
+                  checked={scanType === 'deep'}
+                  onChange={(e) => setScanType(e.target.value)}
+                  className="w-4 h-4 text-blue-600 border-gray-300 focus:ring-blue-500 mt-0.5"
+                />
+                <div>
+                  <div className="font-medium text-gray-900">Deep Scan</div>
+                  <div className="text-sm text-gray-600">
+                    Comprehensive scan for all recoverable files (30+ minutes)
+                  </div>
                 </div>
-              </div>
-            </label>
+              </label>
+            </div>
           </div>
-        </div>
+        )}
 
         {/* Actions */}
         <div className="flex gap-3">
@@ -175,7 +177,11 @@ export function DriveSelectionDialog({ isOpen, onClose, onStartScan, drives, ini
             }`}
           >
             <RefreshCw className="w-4 h-4" />
-            Start {scanType.charAt(0).toUpperCase() + scanType.slice(1)} Scan
+            Start {scanType === 'cluster' ? 'Cluster' :
+                   scanType === 'health' ? 'Health' :
+                   scanType === 'signature' ? 'Signature' :
+                   scanType === 'forensic' ? 'Forensic' :
+                   scanType.charAt(0).toUpperCase() + scanType.slice(1)} Scan
           </button>
         </div>
       </div>

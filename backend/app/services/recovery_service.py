@@ -146,10 +146,13 @@ class RecoveryService:
         """Broadcast recovery progress via WebSocket"""
         recovery_info = self.active_recoveries[recovery_id]
         
+        # Format progress to 2 decimal places for consistency
+        progress_value = round(recovery_info["progress"], 2)
+        
         progress_data = RecoveryProgress(
             recoveryId=recovery_id,
             isRecovering=recovery_info["status"] == "running",
-            progress=recovery_info["progress"],
+            progress=progress_value,
             currentFile=recovery_info["current_file"],
             filesRecovered=recovery_info["files_recovered"],
             totalFiles=recovery_info["total_files"],

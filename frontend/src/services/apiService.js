@@ -98,6 +98,14 @@ export class ApiService {
     return this.get(`/drives/${driveId}`);
   }
 
+  async getDriveHealth(driveId) {
+    return this.get(`/drives/${driveId}/health`);
+  }
+
+  async getDriveDetails(driveId) {
+    return this.get(`/drives/${driveId}/details`);
+  }
+
   async validateDrive(driveId) {
     return this.post(`/drives/${driveId}/validate`, {});
   }
@@ -236,6 +244,45 @@ export class ApiService {
 
   async deleteItems(paths) {
     return this.post('/explorer/items', { paths });
+  }
+
+  // System performance
+  async getSystemPerformance() {
+    try {
+      return await this.get('/system/performance');
+    } catch (error) {
+      console.error('Failed to get system performance:', error);
+      return null;
+    }
+  }
+
+  connectSystemPerformanceStream(callback) {
+    const ws = new WebSocket('ws://localhost:8000/api/system/performance/stream');
+    
+    ws.onopen = () => {
+      console.log('System performance stream connected');
+    };
+    
+    ws.onmessage = (event) => {
+      try {
+        const message = JSON.parse(event.data);
+        if (message.type === 'system_performance' && message.data) {
+          callback(message.data);
+        }
+      } catch (error) {
+        console.error('Error parsing performance data:', error);
+      }
+    };
+    
+    ws.onclose = () => {
+      console.log('System performance stream disconnected');
+    };
+    
+    ws.onerror = (error) => {
+      console.error('System performance stream error:', error);
+    };
+    
+    return ws;
   }
 }
 

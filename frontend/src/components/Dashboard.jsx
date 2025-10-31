@@ -18,6 +18,9 @@ import {
   Thermometer,
   Database
 } from 'lucide-react';
+import { useSystemPerformance } from '../hooks/useSystemPerformance';
+import { DriveHealthDialog } from './DriveHealthDialog';
+import { DriveDetailsDialog } from './DriveDetailsDialog';
 
 /**
  * @param {Object} props
@@ -25,8 +28,10 @@ import {
  * @param {import('../types/index.js').DriveInfo[]} props.drives
  * @param {boolean} props.drivesLoading
  * @param {Object} props.statistics
+ * @param {string} props.activeScanType - Currently active scan type from completed scans
+ * @param {Array} props.recentActivities - Recent scan and recovery activities
  */
-export function Dashboard({ onStartScan, drives, drivesLoading = false, statistics = {} }) {
+export function Dashboard({ onStartScan, drives, drivesLoading = false, statistics = {}, activeScanType = null, recentActivities = [] }) {
   const [systemInfo, setSystemInfo] = useState({
     totalDrives: 0,
     healthyDrives: 0,
@@ -36,6 +41,24 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
     totalRecoveredSize: '0 MB',
     successRate: 0
   });
+
+  // Hook for real-time system performance
+  const { performance, isLoading: perfLoading, error: perfError } = useSystemPerformance();
+
+  // Dialog states
+  const [showHealthDialog, setShowHealthDialog] = useState(false);
+  const [showDetailsDialog, setShowDetailsDialog] = useState(false);
+  const [selectedDrive, setSelectedDrive] = useState(null);
+
+  const handleShowHealth = (drive) => {
+    setSelectedDrive(drive);
+    setShowHealthDialog(true);
+  };
+
+  const handleShowDetails = (drive) => {
+    setSelectedDrive(drive);
+    setShowDetailsDialog(true);
+  };
 
   useEffect(() => {
     // Calculate system statistics
@@ -178,9 +201,9 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
     <div className="flex-1 overflow-y-auto bg-gray-50">
       <div className="max-w-7xl mx-auto p-8">
         {/* Header */}
-        <div className="mb-8">
-          <h1 className="text-3xl font-bold text-gray-900 mb-2">ReStoreX Dashboard</h1>
-          <p className="text-gray-600">Professional data recovery and disk analysis tools</p>
+        <div className="mb-8 text-center">
+          <h1 className="text-5xl font-bold text-gray-900 mb-3">ReStoreX</h1>
+          <p className="text-xl font-bold text-gray-700">Professional data recovery and disk analysis tools</p>
         </div>
 
         {/* System Overview Cards */}
@@ -305,11 +328,17 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
                   </div>
                   
                   <div className="flex items-center gap-2">
-                    <button className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-md transition-colors">
+                    <button 
+                      onClick={() => handleShowHealth(drive)}
+                      className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-md transition-colors"
+                    >
                       <Cpu className="w-3 h-3 inline mr-1" />
                       Health
                     </button>
-                    <button className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-md transition-colors">
+                    <button 
+                      onClick={() => handleShowDetails(drive)}
+                      className="px-3 py-1.5 text-xs text-gray-600 hover:text-gray-800 hover:bg-gray-200 rounded-md transition-colors"
+                    >
                       <Settings className="w-3 h-3 inline mr-1" />
                       Details
                     </button>
@@ -336,7 +365,7 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
                 return (
                   <div
                     key={option.id}
-                    className="group relative bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-gray-300 hover:shadow-lg transition-all duration-200 cursor-pointer"
+                    className="group relative bg-white border-2 border-gray-200 rounded-xl p-6 hover:border-gray-300 hover:shadow-lg transition-all duration-200 cursor-pointer flex flex-col"
                     onClick={() => handleScanStart(option.id)}
                   >
                     {/* Recommended Badge */}
@@ -354,7 +383,7 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
                     </div>
 
                     {/* Content */}
-                    <div className="mb-4">
+                    <div className="flex-1">
                       <h3 className="text-lg font-semibold text-gray-900 mb-2">{option.title}</h3>
                       <p className="text-sm text-gray-600 mb-3 leading-relaxed">
                         {option.description}
@@ -371,7 +400,7 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
                       </div>
 
                       {/* Time Estimate */}
-                      <div className="flex items-center gap-2 text-xs text-gray-500">
+                      <div className="flex items-center gap-2 text-xs text-gray-500 mb-4">
                         <Clock className="w-3 h-3" />
                         <span>Estimated time: {option.estimatedTime}</span>
                       </div>
@@ -402,92 +431,189 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
               <h3 className="text-lg font-semibold text-gray-900">Recent Activity</h3>
             </div>
             <div className="p-6">
-              <div className="space-y-4">
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-green-100 rounded-lg flex items-center justify-center">
-                    <CheckCircle className="w-4 h-4 text-green-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-900">Deep scan completed</p>
-                    <p className="text-xs text-gray-600">SD card (S:) • 2,847 files recovered</p>
-                  </div>
-                  <span className="text-xs text-gray-500">2 hours ago</span>
+              {recentActivities.length === 0 ? (
+                <div className="text-center py-8">
+                  <Info className="w-12 h-12 text-gray-300 mx-auto mb-3" />
+                  <p className="text-sm text-gray-500">No recent activities</p>
+                  <p className="text-xs text-gray-400 mt-1">Start a scan to see activity here</p>
                 </div>
-                
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-blue-100 rounded-lg flex items-center justify-center">
-                    <HardDrive className="w-4 h-4 text-blue-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-900">Drive health check</p>
-                    <p className="text-xs text-gray-600">USB Drive (D:) • Status: Healthy</p>
-                  </div>
-                  <span className="text-xs text-gray-500">1 day ago</span>
+              ) : (
+                <div className="space-y-4">
+                  {recentActivities.slice(0, 5).map((activity) => {
+                    const getActivityIcon = () => {
+                      if (activity.icon === 'success') {
+                        return <CheckCircle className="w-4 h-4 text-green-600" />;
+                      } else if (activity.icon === 'warning') {
+                        return <AlertTriangle className="w-4 h-4 text-orange-600" />;
+                      } else if (activity.icon === 'error') {
+                        return <AlertTriangle className="w-4 h-4 text-red-600" />;
+                      } else {
+                        return <Info className="w-4 h-4 text-blue-600" />;
+                      }
+                    };
+
+                    const getActivityBgColor = () => {
+                      if (activity.icon === 'success') return 'bg-green-100';
+                      if (activity.icon === 'warning') return 'bg-orange-100';
+                      if (activity.icon === 'error') return 'bg-red-100';
+                      return 'bg-blue-100';
+                    };
+
+                    const getTimeAgo = (timestamp) => {
+                      const now = new Date();
+                      const diff = now - new Date(timestamp);
+                      const minutes = Math.floor(diff / 60000);
+                      const hours = Math.floor(diff / 3600000);
+                      const days = Math.floor(diff / 86400000);
+
+                      if (minutes < 1) return 'Just now';
+                      if (minutes < 60) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
+                      if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
+                      return `${days} day${days > 1 ? 's' : ''} ago`;
+                    };
+
+                    return (
+                      <div key={activity.id} className="flex items-center gap-3">
+                        <div className={`w-8 h-8 ${getActivityBgColor()} rounded-lg flex items-center justify-center`}>
+                          {getActivityIcon()}
+                        </div>
+                        <div className="flex-1">
+                          <p className="text-sm font-medium text-gray-900">{activity.title}</p>
+                          <p className="text-xs text-gray-600">{activity.description}</p>
+                        </div>
+                        <span className="text-xs text-gray-500">{getTimeAgo(activity.timestamp)}</span>
+                      </div>
+                    );
+                  })}
                 </div>
-                
-                <div className="flex items-center gap-3">
-                  <div className="w-8 h-8 bg-orange-100 rounded-lg flex items-center justify-center">
-                    <AlertTriangle className="w-4 h-4 text-orange-600" />
-                  </div>
-                  <div className="flex-1">
-                    <p className="text-sm font-medium text-gray-900">Scan interrupted</p>
-                    <p className="text-xs text-gray-600">External HDD • User cancelled</p>
-                  </div>
-                  <span className="text-xs text-gray-500">3 days ago</span>
-                </div>
-              </div>
+              )}
             </div>
           </div>
 
           {/* System Performance */}
           <div className="bg-white rounded-xl shadow-sm border border-gray-200">
             <div className="p-6 border-b border-gray-200">
-              <h3 className="text-lg font-semibold text-gray-900">System Performance</h3>
+              <div className="flex items-center justify-between">
+                <h3 className="text-lg font-semibold text-gray-900">System Performance</h3>
+                {!perfLoading && (
+                  <div className="flex items-center gap-1">
+                    <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse"></div>
+                    <span className="text-xs text-gray-500">Live</span>
+                  </div>
+                )}
+              </div>
             </div>
             <div className="p-6">
-              <div className="space-y-6">
-                {/* CPU Usage */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Cpu className="w-4 h-4 text-blue-600" />
-                      <span className="text-sm font-medium text-gray-700">CPU Usage</span>
-                    </div>
-                    <span className="text-sm text-gray-600">23%</span>
-                  </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div className="bg-blue-600 h-2 rounded-full" style={{ width: '23%' }} />
-                  </div>
+              {perfError ? (
+                <div className="text-sm text-red-600 text-center py-4">
+                  Failed to load performance data
                 </div>
+              ) : (
+                <div className="space-y-6">
+                  {/* CPU Usage */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Cpu className="w-4 h-4 text-blue-600" />
+                        <span className="text-sm font-medium text-gray-700">CPU Usage</span>
+                      </div>
+                      <span className="text-sm text-gray-600">
+                        {perfLoading ? '...' : `${performance.cpu.percent}%`}
+                        {performance.cpu.count > 0 && (
+                          <span className="text-xs text-gray-500 ml-2">
+                            ({performance.cpu.count} cores)
+                          </span>
+                        )}
+                      </span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-blue-600 h-2 rounded-full transition-all duration-500 ease-out" 
+                        style={{ width: `${Math.min(performance.cpu.percent, 100)}%` }} 
+                      />
+                    </div>
+                  </div>
 
-                {/* Memory Usage */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <BarChart3 className="w-4 h-4 text-green-600" />
-                      <span className="text-sm font-medium text-gray-700">Memory</span>
+                  {/* Memory Usage */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <BarChart3 className="w-4 h-4 text-green-600" />
+                        <span className="text-sm font-medium text-gray-700">Memory</span>
+                      </div>
+                      <span className="text-sm text-gray-600">
+                        {perfLoading 
+                          ? '...' 
+                          : `${performance.memory.used_gb.toFixed(1)} GB / ${performance.memory.total_gb.toFixed(1)} GB`
+                        }
+                      </span>
                     </div>
-                    <span className="text-sm text-gray-600">4.2 GB / 16 GB</span>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className="bg-green-600 h-2 rounded-full transition-all duration-500 ease-out" 
+                        style={{ width: `${Math.min(performance.memory.percent, 100)}%` }} 
+                      />
+                    </div>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div className="bg-green-600 h-2 rounded-full" style={{ width: '26%' }} />
-                  </div>
-                </div>
 
-                {/* Temperature */}
-                <div>
-                  <div className="flex items-center justify-between mb-2">
-                    <div className="flex items-center gap-2">
-                      <Thermometer className="w-4 h-4 text-orange-600" />
-                      <span className="text-sm font-medium text-gray-700">Temperature</span>
+                  {/* Temperature */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="flex items-center gap-2">
+                        <Thermometer className="w-4 h-4 text-orange-600" />
+                        <span className="text-sm font-medium text-gray-700">Temperature</span>
+                        {performance.temperature?.sensor?.includes('Simulated') && (
+                          <span className="text-xs text-gray-400 italic" title="Simulated based on CPU usage">
+                            (est.)
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-sm text-gray-600">
+                        {perfLoading 
+                          ? '...' 
+                          : performance.temperature 
+                            ? `${performance.temperature.value}°${performance.temperature.unit}` 
+                            : 'N/A'
+                        }
+                      </span>
                     </div>
-                    <span className="text-sm text-gray-600">42°C</span>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div 
+                        className={`h-2 rounded-full transition-all duration-500 ease-out ${
+                          performance.temperature?.value > 70 ? 'bg-red-600' :
+                          performance.temperature?.value > 50 ? 'bg-orange-600' :
+                          'bg-green-600'
+                        }`}
+                        style={{ 
+                          width: performance.temperature 
+                            ? `${Math.min((performance.temperature.value / 100) * 100, 100)}%` 
+                            : '0%' 
+                        }} 
+                      />
+                    </div>
                   </div>
-                  <div className="w-full bg-gray-200 rounded-full h-2">
-                    <div className="bg-orange-600 h-2 rounded-full" style={{ width: '42%' }} />
-                  </div>
+
+                  {/* Additional Info */}
+                  {!perfLoading && (
+                    <div className="pt-4 border-t border-gray-100">
+                      <div className="grid grid-cols-2 gap-4 text-xs">
+                        <div>
+                          <span className="text-gray-500">Disk I/O:</span>
+                          <span className="text-gray-700 ml-1">
+                            ↓{performance.disk.read_mb.toFixed(0)} MB
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-gray-500">Processes:</span>
+                          <span className="text-gray-700 ml-1">
+                            {performance.processes}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                 </div>
-              </div>
+              )}
             </div>
           </div>
         </div>
@@ -511,6 +637,18 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
           </div>
         </div>
       </div>
+
+      {/* Dialogs */}
+      <DriveHealthDialog
+        isOpen={showHealthDialog}
+        onClose={() => setShowHealthDialog(false)}
+        drive={selectedDrive}
+      />
+      <DriveDetailsDialog
+        isOpen={showDetailsDialog}
+        onClose={() => setShowDetailsDialog(false)}
+        drive={selectedDrive}
+      />
     </div>
   );
 }

@@ -7,3 +7,4 @@ psutil
 aiofiles
 python-magic-bin
 Pillow
+WMI; sys_platform == 'win32'

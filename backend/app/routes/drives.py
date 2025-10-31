@@ -48,3 +48,33 @@ async def validate_drive(drive_id: str):
     except Exception as e:
         logger.error(f"Error validating drive {drive_id}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/drives/{drive_id}/health")
+async def get_drive_health(drive_id: str):
+    """Get detailed health information for a drive"""
+    try:
+        health = await drive_service.get_drive_health(drive_id)
+        if not health:
+            raise HTTPException(status_code=404, detail="Drive not found")
+        return {"status": "success", "data": health}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting drive health {drive_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/drives/{drive_id}/details")
+async def get_drive_details(drive_id: str):
+    """Get comprehensive details about a drive"""
+    try:
+        details = await drive_service.get_drive_details(drive_id)
+        if not details:
+            raise HTTPException(status_code=404, detail="Drive not found")
+        return {"status": "success", "data": details}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting drive details {drive_id}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

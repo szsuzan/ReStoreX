@@ -13,7 +13,8 @@ import {
   File,
   Settings,
   Info,
-  ExternalLink
+  ExternalLink,
+  X
 } from 'lucide-react';
 
 /**
@@ -28,6 +29,10 @@ import {
  * @param {(view: string) => void} props.onViewChange
  * @param {() => void} props.onShowInExplorer
  * @param {() => void} props.onOpenSettings
+ * @param {Array} props.scanTabs - Array of scan tab objects
+ * @param {number} props.activeTabId - Currently active tab ID
+ * @param {(tabId: number) => void} props.onSwitchTab - Function to switch tabs
+ * @param {(tabId: number) => void} props.onCloseTab - Function to close tabs
  */
 export function Sidebar({ 
   scanResults, 
@@ -39,7 +44,11 @@ export function Sidebar({
   currentView,
   onViewChange,
   onShowInExplorer,
-  onOpenSettings
+  onOpenSettings,
+  scanTabs = [],
+  activeTabId,
+  onSwitchTab,
+  onCloseTab
 }) {
   const [expandedItems, setExpandedItems] = useState(new Set(['SD card (S:)', 'Pictures']));
 
@@ -125,12 +134,16 @@ export function Sidebar({
           <Menu className="w-5 h-5 text-gray-600 group-hover:text-gray-800" />
         </button>
         {!isCollapsed && (
-          <div className="flex items-center gap-2">
+          <button 
+            onClick={() => onViewChange('dashboard')}
+            className="flex items-center gap-2 hover:bg-gray-50 px-2 py-1 rounded-lg transition-colors cursor-pointer"
+            title="Go to Dashboard"
+          >
             <div className="w-8 h-8 bg-blue-600 rounded-lg flex items-center justify-center">
               <HardDrive className="w-5 h-5 text-white" />
             </div>
             <h1 className="text-lg font-bold text-gray-800">ReStoreX</h1>
-          </div>
+          </button>
         )}
       </div>
 
@@ -141,24 +154,31 @@ export function Sidebar({
             <div className="space-y-1">
               <button 
                 onClick={() => onViewChange('dashboard')}
-                className={`w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group ${
-                  currentView === 'dashboard' 
-                    ? 'bg-blue-600 text-white' 
-                    : 'hover:bg-gray-100 text-gray-700'
-                }`}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group hover:bg-blue-600 hover:text-white text-gray-700"
               >
-                <LayoutDashboard className={`w-4 h-4 ${
-                  currentView === 'dashboard' ? 'text-white' : 'text-gray-500 group-hover:text-gray-700'
-                }`} />
+                <LayoutDashboard className="w-4 h-4 text-gray-500 group-hover:text-white" />
                 <span className="text-sm font-medium">Dashboard</span>
               </button>
               
               <button 
-                onClick={onStartNewScan}
-                className="w-full flex items-center gap-3 px-4 py-2.5 text-left bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors text-white group"
+                onClick={onShowInExplorer}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group hover:bg-blue-600 hover:text-white text-gray-700"
               >
-                <HardDrive className="w-4 h-4" />
-                <span className="text-sm font-medium">New Scan</span>
+                <ExternalLink className="w-4 h-4 text-gray-500 group-hover:text-white" />
+                <span className="text-sm font-medium">Show in Explorer</span>
+              </button>
+              
+              <button 
+                onClick={onOpenSettings}
+                className="w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group hover:bg-blue-600 hover:text-white text-gray-700"
+              >
+                <Settings className="w-4 h-4 text-gray-500 group-hover:text-white" />
+                <span className="text-sm font-medium">Settings</span>
+              </button>
+              
+              <button className="w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group hover:bg-blue-600 hover:text-white text-gray-700">
+                <Info className="w-4 h-4 text-gray-500 group-hover:text-white" />
+                <span className="text-sm font-medium">About</span>
               </button>
             </div>
           </div>
@@ -169,32 +189,43 @@ export function Sidebar({
               <h2 className="text-sm font-semibold text-gray-600 mb-3 uppercase tracking-wide">
                 Scan Results
               </h2>
+              
+              {/* Show Scan Tabs if available */}
+              {scanTabs.length > 0 ? (
+                <div className="space-y-1 mb-4">
+                  {scanTabs.map(tab => (
+                    <div key={tab.id} className="flex items-center group">
+                      <button
+                        onClick={() => onSwitchTab(tab.id)}
+                        className={`flex-1 flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-100 transition-all duration-200 rounded-l-lg ${
+                          tab.id === activeTabId ? 'bg-blue-50 text-blue-700 font-medium' : 'text-gray-700'
+                        }`}
+                      >
+                        <File className={`w-4 h-4 ${tab.id === activeTabId ? 'text-blue-600' : 'text-gray-500'}`} />
+                        <span className="flex-1 text-sm truncate">{tab.name}</span>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          onCloseTab(tab.id);
+                        }}
+                        className={`px-2 py-2.5 hover:bg-red-50 hover:text-red-600 transition-colors rounded-r-lg opacity-0 group-hover:opacity-100 ${
+                          tab.id === activeTabId ? 'bg-blue-50' : ''
+                        }`}
+                        title="Close tab"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              ) : null}
+              
+              {/* Show hierarchical scan results tree */}
               <div className="space-y-1">
                 {scanResults.map(result => renderScanResult(result))}
               </div>
             </div>
-          </div>
-
-          {/* Bottom Actions */}
-          <div className="p-4 border-t border-gray-200 bg-white space-y-2">
-            <button 
-              onClick={onShowInExplorer}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-100 rounded-lg transition-colors text-gray-700 group">
-              <ExternalLink className="w-4 h-4 text-gray-500 group-hover:text-gray-700" />
-              <span className="text-sm">Show in Explorer</span>
-            </button>
-            
-            <button 
-              onClick={onOpenSettings}
-              className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-100 rounded-lg transition-colors text-gray-700 group">
-              <Settings className="w-4 h-4 text-gray-500 group-hover:text-gray-700" />
-              <span className="text-sm">Settings</span>
-            </button>
-            
-            <button className="w-full flex items-center gap-3 px-4 py-2.5 text-left hover:bg-gray-100 rounded-lg transition-colors text-gray-700 group">
-              <Info className="w-4 h-4 text-gray-500 group-hover:text-gray-700" />
-              <span className="text-sm">About</span>
-            </button>
           </div>
         </>
       )}

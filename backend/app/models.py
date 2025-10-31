@@ -36,7 +36,7 @@ class ScanOptions(BaseModel):
 
 class ScanRequest(BaseModel):
     driveId: str
-    scanType: Literal['normal', 'deep', 'cluster', 'health', 'signature']
+    scanType: Literal['normal', 'deep', 'cluster', 'health', 'signature', 'forensic']
     options: Optional[ScanOptions] = ScanOptions()
 
 
