@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
-import { Search, Copy, Download, Eye, EyeOff } from 'lucide-react';
+import { Search, Copy, Download, Eye, EyeOff, AlertCircle } from 'lucide-react';
+import { apiService } from '../services/apiService';
 
 /**
  * @param {Object} props
@@ -8,8 +9,9 @@ import { Search, Copy, Download, Eye, EyeOff } from 'lucide-react';
  * @param {string} props.fileType
  */
 export function HexViewer({ fileId, fileName, fileType }) {
-  const [hexData, setHexData] = useState('');
+  const [hexData, setHexData] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
   const [showAscii, setShowAscii] = useState(true);
   const [bytesPerRow, setBytesPerRow] = useState(16);
   const [searchTerm, setSearchTerm] = useState('');
@@ -21,16 +23,26 @@ export function HexViewer({ fileId, fileName, fileType }) {
 
   const loadHexData = async () => {
     setLoading(true);
+    setError(null);
     try {
-      // Simulate loading hex data - in production this would call the API
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      console.log('Loading hex data for file:', fileId);
+      // Load hex data from API
+      const response = await apiService.getFileHexData(fileId, 0, 512);
+      console.log('Hex data loaded:', response);
       
-      // Generate mock hex data based on file type
-      const mockHexData = generateMockHexData(fileType, fileName);
-      setHexData(mockHexData);
+      if (response && response.data) {
+        setHexData(response.data);
+      } else {
+        // Fallback to mock data if API doesn't return proper data
+        const mockHexData = generateMockHexData(fileType, fileName);
+        setHexData(mockHexData);
+      }
     } catch (error) {
       console.error('Failed to load hex data:', error);
-      setHexData('');
+      setError(error.message);
+      // Use mock data as fallback
+      const mockHexData = generateMockHexData(fileType, fileName);
+      setHexData(mockHexData);
     } finally {
       setLoading(false);
     }
@@ -162,6 +174,26 @@ export function HexViewer({ fileId, fileName, fileType }) {
         <div className="flex items-center gap-3 text-gray-600">
           <div className="w-5 h-5 border-2 border-blue-600 border-t-transparent rounded-full animate-spin" />
           <span>Loading hex data...</span>
+        </div>
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="flex items-center justify-center h-64">
+        <div className="flex items-center gap-3 text-orange-600">
+          <AlertCircle className="w-5 h-5" />
+          <div>
+            <div className="text-sm font-medium">Failed to load hex data</div>
+            <div className="text-xs text-gray-600 mt-1">{error}</div>
+            <button 
+              onClick={loadHexData}
+              className="mt-2 text-xs text-blue-600 hover:text-blue-700 underline"
+            >
+              Try again
+            </button>
+          </div>
         </div>
       </div>
     );

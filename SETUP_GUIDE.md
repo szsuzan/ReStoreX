@@ -8,6 +8,27 @@ ReStoreX is a data recovery application with:
 
 ## Quick Start
 
+### 1. Install TestDisk (Required)
+
+**Option A: Place in Project (Recommended)**
+1. Download TestDisk from: https://www.cgsecurity.org/wiki/TestDisk_Download
+2. Extract the contents to `tools/testdisk/` folder:
+   ```
+   ReStoreX/
+     └── tools/
+         └── testdisk/
+             ├── testdisk_win.exe
+             ├── photorec_win.exe
+             └── (other DLL files)
+   ```
+3. The application will automatically detect TestDisk from this location
+
+**Option B: System PATH**
+- Install TestDisk globally and add to system PATH
+
+**Option C: Manual Configuration**
+- Install TestDisk anywhere and set path in `backend/.env`
+
 ### Backend Setup
 
 1. **Navigate to backend folder:**
@@ -20,11 +41,7 @@ ReStoreX is a data recovery application with:
    .\setup.bat
    ```
 
-3. **Install TestDisk** (if not already installed):
-   - Download from: https://www.cgsecurity.org/wiki/TestDisk_Download
-   - Extract and add to PATH or configure in `.env`
-
-4. **Start the backend:**
+3. **Start the backend:**
    ```powershell
    .\start.bat
    ```

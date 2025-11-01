@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 from typing import List, Optional
 from app.models import ScanRequest, ScanProgress, RecoveredFile
 from app.services.scan_service import scan_service
@@ -11,9 +11,17 @@ router = APIRouter()
 
 
 @router.post("/scan/start")
-async def start_scan(request: ScanRequest):
+async def start_scan(raw_request: Request):
     """Start a new scan operation"""
     try:
+        # Log raw request body for debugging
+        body = await raw_request.json()
+        logger.info(f"Received raw scan request body: {body}")
+        
+        # Parse with Pydantic
+        request = ScanRequest(**body)
+        logger.info(f"Parsed scan request - Drive: {request.driveId}, Type: {request.scanType}, Options: {request.options}")
+        
         scan_id = await scan_service.start_scan(
             request.driveId,
             request.scanType,
@@ -34,7 +42,7 @@ async def start_scan(request: ScanRequest):
 async def get_scan_status(scan_id: str):
     """Get the status of a running or completed scan"""
     try:
-        status = await scan_service.get_scan_status(scan_id)
+        status = scan_service.get_scan_status(scan_id)
         if not status:
             raise HTTPException(status_code=404, detail="Scan not found")
         return status
@@ -49,9 +57,7 @@ async def get_scan_status(scan_id: str):
 async def cancel_scan(scan_id: str):
     """Cancel a running scan"""
     try:
-        success = await scan_service.cancel_scan(scan_id)
-        if not success:
-            raise HTTPException(status_code=404, detail="Scan not found")
+        await scan_service.cancel_scan(scan_id)
         return {"message": "Scan cancelled successfully"}
     except HTTPException:
         raise
@@ -83,10 +89,13 @@ async def get_scan_results(
         if searchQuery:
             filters["searchQuery"] = searchQuery
         
-        results = await scan_service.get_scan_results(scan_id, filters)
+        results = scan_service.get_scan_results(scan_id)
+        
+        # Apply filters if provided (simple implementation)
+        filtered_results = results
         
         # Cache file metadata for recovery
-        for file in results:
+        for file in filtered_results:
             recovery_service.cache_file_metadata(file.id, {
                 'name': file.name,
                 'type': file.type,
@@ -94,7 +103,57 @@ async def get_scan_results(
                 'path': file.path
             })
         
-        return results
+        return filtered_results
     except Exception as e:
         logger.error(f"Error getting scan results: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/scan/{scan_id}/report")
+async def get_scan_report(scan_id: str):
+    """Get the cluster map or health report for diagnostic scans"""
+    try:
+        import json
+        import os
+        
+        scan_status = scan_service.get_scan_status(scan_id)
+        if not scan_status:
+            raise HTTPException(status_code=404, detail="Scan not found")
+        
+        report_data = {}
+        
+        # Check if this is a cluster scan
+        if 'cluster_map' in scan_status and scan_status['cluster_map']:
+            cluster_file = scan_status['cluster_map']
+            if os.path.exists(cluster_file):
+                with open(cluster_file, 'r') as f:
+                    cluster_data = json.load(f)
+                    report_data['type'] = 'cluster'
+                    report_data['data'] = cluster_data
+                    logger.info(f"Loaded cluster map with {len(cluster_data.get('cluster_map', []))} clusters")
+        
+        # Check if this is a health scan
+        if 'health_data' in scan_status:
+            report_data['type'] = 'health'
+            report_data['data'] = scan_status['health_data']
+            logger.info(f"Loaded health data with score: {scan_status['health_data'].get('health_score', 0)}")
+        
+        # If we have a health report file, prefer that
+        if 'health_report' in scan_status and scan_status['health_report']:
+            health_file = scan_status['health_report']
+            if os.path.exists(health_file):
+                with open(health_file, 'r') as f:
+                    health_data = json.load(f)
+                    report_data['type'] = 'health'
+                    report_data['data'] = health_data
+                    logger.info(f"Loaded health report from file")
+        
+        if not report_data:
+            raise HTTPException(status_code=404, detail="No report data available for this scan")
+        
+        return report_data
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting scan report: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))

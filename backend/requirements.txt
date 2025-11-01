@@ -8,3 +8,9 @@ aiofiles
 python-magic-bin
 Pillow
 WMI; sys_platform == 'win32'
+pywin32; sys_platform == 'win32'
+
+# Optional: For better SMART data reading (if WMI doesn't work)
+# Uncomment if you want to install these alternatives:
+# pySMART
+# Note: smartmontools (smartctl) must be installed separately from https://www.smartmontools.org/

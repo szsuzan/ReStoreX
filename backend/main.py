@@ -28,7 +28,7 @@ async def lifespan(app: FastAPI):
 # Create FastAPI app
 app = FastAPI(
     title="ReStoreX API",
-    description="Data Recovery Backend using TestDisk and PhotoRec",
+    description="Data Recovery Backend using Python-based file carving",
     version=settings.VERSION,
     lifespan=lifespan
 )
@@ -54,15 +54,8 @@ app.include_router(system.router, prefix="/api", tags=["system"])
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint"""
-    from app.services.testdisk_service import testdisk_service
-    
-    testdisk_available = await testdisk_service.check_testdisk()
-    photorec_available = await testdisk_service.check_photorec()
-    
     return {
         "status": "healthy",
-        "testdisk_available": testdisk_available,
-        "photorec_available": photorec_available,
         "version": settings.VERSION
     }
 
@@ -79,4 +72,21 @@ async def websocket_endpoint(websocket: WebSocket):
     except WebSocketDisconnect:
         websocket_manager.disconnect(websocket)
         logger.info("WebSocket client disconnected")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    
+    logger.info("=" * 60)
+    logger.info("Starting ReStoreX Backend Server")
+    logger.info(f"Recovery Mode: Pure Python (Signature-based)")
+    logger.info("=" * 60)
+    
+    uvicorn.run(
+        "main:app",
+        host=settings.HOST,
+        port=settings.PORT,
+        reload=True,
+        log_level="info"
+    )
 

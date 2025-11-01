@@ -26,8 +26,16 @@ export class ApiService {
     this.ws.onmessage = (event) => {
       try {
         const message = JSON.parse(event.data);
-        // Pass the actual data payload to listeners, not the entire message
-        this.notifyListeners(message.type, message.data || message);
+        console.log('WebSocket received:', message);
+        
+        // Check if message has a type field (new format: {type: "scan_progress", ...})
+        if (message.type) {
+          this.notifyListeners(message.type, message);
+        }
+        // Fallback to old format for compatibility
+        else if (message.event) {
+          this.notifyListeners(message.event, message.data || message);
+        }
       } catch (error) {
         console.error('WebSocket message error:', error);
       }
@@ -126,6 +134,10 @@ export class ApiService {
   async getScanResults(scanId, options = {}) {
     const params = new URLSearchParams(options).toString();
     return this.get(`/scan/${scanId}/results?${params}`);
+  }
+
+  async getScanReport(scanId) {
+    return this.get(`/scan/${scanId}/report`);
   }
 
   // Recovery operations

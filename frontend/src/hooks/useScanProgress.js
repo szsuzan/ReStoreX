@@ -13,6 +13,8 @@ export function useScanProgress(scanId) {
     totalSectors: 0,
     filesFound: 0,
     estimatedTimeRemaining: '0 minutes',
+    currentPass: 0,
+    expectedTime: 'Calculating...',
   });
 
   const { subscribe } = useWebSocket();
@@ -22,14 +24,19 @@ export function useScanProgress(scanId) {
 
     const unsubscribeProgress = subscribe('scan_progress', (data) => {
       if (data.scanId === scanId) {
+        // Extract scan statistics if available
+        const scanStats = data.scan_stats || {};
+        
         setProgress(prev => ({
           ...prev,
           isScanning: true,
           progress: data.progress,
-          currentSector: data.currentSector,
-          totalSectors: data.totalSectors || prev.totalSectors,
-          filesFound: data.filesFound,
-          estimatedTimeRemaining: data.estimatedTimeRemaining
+          currentSector: scanStats.scanned_sectors || data.currentSector || 0,
+          totalSectors: scanStats.total_sectors || data.totalSectors || prev.totalSectors,
+          filesFound: data.filesFound || data.files_found || 0,
+          estimatedTimeRemaining: scanStats.estimated_time || data.estimatedTimeRemaining || 'Calculating...',
+          currentPass: scanStats.current_pass || 0,
+          expectedTime: scanStats.expected_time || 'Calculating...',
         }));
       }
     });

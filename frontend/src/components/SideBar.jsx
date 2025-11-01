@@ -154,9 +154,15 @@ export function Sidebar({
             <div className="space-y-1">
               <button 
                 onClick={() => onViewChange('dashboard')}
-                className="w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group hover:bg-blue-600 hover:text-white text-gray-700"
+                className={`w-full flex items-center gap-3 px-4 py-2.5 text-left rounded-lg transition-colors group ${
+                  currentView === 'dashboard' 
+                    ? 'bg-blue-600 text-white' 
+                    : 'hover:bg-blue-600 hover:text-white text-gray-700'
+                }`}
               >
-                <LayoutDashboard className="w-4 h-4 text-gray-500 group-hover:text-white" />
+                <LayoutDashboard className={`w-4 h-4 ${
+                  currentView === 'dashboard' ? 'text-white' : 'text-gray-500 group-hover:text-white'
+                }`} />
                 <span className="text-sm font-medium">Dashboard</span>
               </button>
               

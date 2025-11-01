@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef } from 'react';
+import { Activity, HardDrive, AlertCircle, CheckCircle, XCircle } from 'lucide-react';
 import { Dashboard } from './components/Dashboard';
 import { Sidebar } from './components/SideBar';
 import { Header } from './components/Header';
@@ -11,10 +12,192 @@ import { RecoveryProgressDialog } from './components/RecoveryProgressDialog';
 import { DriveSelectionDialog } from './components/DriveSelectionDialog';
 import { SettingsDialog } from './components/SettingsDialog';
 import { ExplorerDialog } from './components/ExplorerDialog';
+import { FolderPickerDialog } from './components/FolderPickerDialog';
 import { ScanReportsPanel } from './components/ScanReportsPanel';
 import { NotificationBox } from './components/NotificationBox';
+import { FilePreviewDialog } from './components/FilePreviewDialog';
+import { ScanReportDialog } from './components/ScanReportDialog';
 import { apiService } from './services/apiService';
 import { useWebSocket } from './hooks/useWebSocket';
+
+// Inline components for rendering reports
+const ClusterReportContent = ({ reportData }) => {
+  if (!reportData || !reportData.data) return <p className="text-gray-500">No cluster data available</p>;
+  
+  const { statistics, cluster_map } = reportData.data;
+  
+  return (
+    <div className="space-y-6">
+      {/* Statistics */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-blue-50 p-4 rounded-lg">
+          <div className="text-sm text-blue-600 font-medium">Total Clusters</div>
+          <div className="text-2xl font-bold text-blue-900">{statistics?.total_clusters?.toLocaleString() || 'N/A'}</div>
+        </div>
+        <div className="bg-green-50 p-4 rounded-lg">
+          <div className="text-sm text-green-600 font-medium">Sampled</div>
+          <div className="text-2xl font-bold text-green-900">{statistics?.sampled_clusters?.toLocaleString() || 'N/A'}</div>
+        </div>
+        <div className="bg-gray-50 p-4 rounded-lg">
+          <div className="text-sm text-gray-600 font-medium">Empty Clusters</div>
+          <div className="text-2xl font-bold text-gray-900">{statistics?.empty_clusters?.toLocaleString() || 'N/A'}</div>
+        </div>
+        <div className="bg-purple-50 p-4 rounded-lg">
+          <div className="text-sm text-purple-600 font-medium">Used Clusters</div>
+          <div className="text-2xl font-bold text-purple-900">{statistics?.used_clusters?.toLocaleString() || 'N/A'}</div>
+        </div>
+      </div>
+
+      {/* Cluster Map Preview */}
+      <div>
+        <h4 className="text-lg font-semibold text-gray-900 mb-3">Cluster Map (First 10 samples)</h4>
+        <div className="space-y-3 max-h-96 overflow-y-auto">
+          {cluster_map && cluster_map.slice(0, 10).map((cluster, idx) => (
+            <div key={idx} className="bg-gray-50 p-4 rounded-lg border border-gray-200">
+              <div className="flex items-center justify-between mb-2">
+                <span className="font-mono text-sm font-medium">Cluster #{cluster.cluster_id}</span>
+                <span className={`px-2 py-1 rounded text-xs font-medium ${cluster.is_empty ? 'bg-gray-200 text-gray-700' : 'bg-blue-100 text-blue-700'}`}>
+                  {cluster.is_empty ? 'Empty' : 'Used'}
+                </span>
+              </div>
+              <div className="text-xs text-gray-500 mb-2">Offset: 0x{cluster.offset?.toString(16).toUpperCase() || '0'}</div>
+              
+              {/* Hex Preview */}
+              <div className="bg-gray-900 text-green-400 p-3 rounded font-mono text-xs overflow-x-auto mb-2">
+                <div className="whitespace-pre">{cluster.hex_preview?.match(/.{1,32}/g)?.slice(0, 4).join('\n') || 'No data'}</div>
+              </div>
+              
+              {/* ASCII Preview */}
+              <div className="bg-gray-100 p-3 rounded font-mono text-xs overflow-x-auto">
+                <div className="whitespace-pre text-gray-700">{cluster.ascii_preview?.substring(0, 128) || 'No ASCII data'}</div>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+};
+
+const HealthReportContent = ({ reportData }) => {
+  if (!reportData || !reportData.data) return <p className="text-gray-500">No health data available</p>;
+  
+  const { health_score, status, drive_path, smart_data, surface_map, recommendations, bad_sectors, total_sectors_tested } = reportData.data;
+  
+  const getStatusColor = () => {
+    if (health_score >= 90) return 'bg-green-500';
+    if (health_score >= 70) return 'bg-blue-500';
+    if (health_score >= 50) return 'bg-yellow-500';
+    return 'bg-red-500';
+  };
+  
+  const getStatusIcon = () => {
+    if (health_score >= 70) return <CheckCircle className="w-12 h-12 text-green-500" />;
+    if (health_score >= 50) return <AlertCircle className="w-12 h-12 text-yellow-500" />;
+    return <XCircle className="w-12 h-12 text-red-500" />;
+  };
+  
+  return (
+    <div className="space-y-6">
+      {/* Health Score */}
+      <div className="flex items-center justify-center mb-6">
+        <div className="text-center">
+          <div className="mb-4">{getStatusIcon()}</div>
+          <div className="text-4xl font-bold text-gray-900 mb-2">{health_score}/100</div>
+          <div className={`inline-block px-4 py-2 rounded-full text-white font-medium ${getStatusColor()}`}>
+            {status || 'Unknown'}
+          </div>
+        </div>
+      </div>
+
+      {/* Drive Info */}
+      <div className="bg-gray-50 p-4 rounded-lg">
+        <div className="flex items-center gap-2 mb-2">
+          <HardDrive className="w-5 h-5 text-gray-600" />
+          <span className="font-medium text-gray-900">Drive: {drive_path}</span>
+        </div>
+      </div>
+
+      {/* Surface Scan Results */}
+      <div className="grid grid-cols-2 gap-4">
+        <div className="bg-blue-50 p-4 rounded-lg">
+          <div className="text-sm text-blue-600 font-medium">Sectors Tested</div>
+          <div className="text-2xl font-bold text-blue-900">{total_sectors_tested?.toLocaleString() || 'N/A'}</div>
+        </div>
+        <div className="bg-red-50 p-4 rounded-lg">
+          <div className="text-sm text-red-600 font-medium">Bad Sectors</div>
+          <div className="text-2xl font-bold text-red-900">{bad_sectors || 0}</div>
+        </div>
+      </div>
+
+      {/* SMART Data */}
+      {smart_data && Object.keys(smart_data).length > 0 && (
+        <div>
+          <h4 className="text-lg font-semibold text-gray-900 mb-3">SMART Data</h4>
+          <div className="bg-gray-50 p-4 rounded-lg space-y-2">
+            {Object.entries(smart_data).map(([key, value]) => (
+              <div key={key} className="flex justify-between text-sm">
+                <span className="text-gray-600">{key.replace(/_/g, ' ')}:</span>
+                <span className="font-medium text-gray-900">
+                  {typeof value === 'object' ? JSON.stringify(value) : String(value)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Recommendations */}
+      {recommendations && recommendations.length > 0 && (
+        <div>
+          <h4 className="text-lg font-semibold text-gray-900 mb-3">Recommendations</h4>
+          <div className="space-y-2">
+            {recommendations.map((rec, idx) => (
+              <div key={idx} className={`p-3 rounded-lg flex items-start gap-3 ${
+                rec.includes('✅') ? 'bg-green-50' : rec.includes('⚠️') ? 'bg-yellow-50' : 'bg-red-50'
+              }`}>
+                <span className="text-sm">{rec}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Surface Map Preview */}
+      {surface_map && surface_map.length > 0 && (
+        <div>
+          <h4 className="text-lg font-semibold text-gray-900 mb-3">Surface Map (Sample)</h4>
+          <div className="flex flex-wrap gap-1">
+            {surface_map.slice(0, 100).map((sector, idx) => (
+              <div
+                key={idx}
+                className={`w-4 h-4 rounded-sm ${
+                  sector.status === 'good' ? 'bg-green-500' : 
+                  sector.status === 'bad' ? 'bg-red-500' : 'bg-yellow-500'
+                }`}
+                title={`Sector ${sector.sector}: ${sector.status}`}
+              />
+            ))}
+          </div>
+          <div className="flex gap-4 mt-3 text-xs">
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 bg-green-500 rounded-sm"></div>
+              <span>Good</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 bg-red-500 rounded-sm"></div>
+              <span>Bad</span>
+            </div>
+            <div className="flex items-center gap-1">
+              <div className="w-3 h-3 bg-yellow-500 rounded-sm"></div>
+              <span>Error</span>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
 
 function App() {
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
@@ -34,11 +217,16 @@ function App() {
   const [showRecoveryProgress, setShowRecoveryProgress] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   const [showExplorer, setShowExplorer] = useState(false);
+  const [showFolderPicker, setShowFolderPicker] = useState(false);
+  const [folderPickerMode, setFolderPickerMode] = useState(null); // 'output' or 'temp'
   const [selectedScanType, setSelectedScanType] = useState('normal'); // Track selected scan type
   const [scanMetadata, setScanMetadata] = useState(null); // Store scan reports data
   const [currentScanTypeForReports, setCurrentScanTypeForReports] = useState(''); // Track scan type for reports
   const [notification, setNotification] = useState(null); // Notification state
   const [scanCompletedIds, setScanCompletedIds] = useState(new Set()); // Track completed scans to avoid duplicate notifications
+  const [showScanReport, setShowScanReport] = useState(false); // Show scan report dialog
+  const [reportScanId, setReportScanId] = useState(null); // Current report scan ID
+  const [reportScanType, setReportScanType] = useState(''); // Current report type (cluster/health)
   const [notificationTimeoutId, setNotificationTimeoutId] = useState(null); // Track notification timeout
   
   // Use ref to track ongoing loadScanResults operations to prevent race conditions
@@ -47,6 +235,10 @@ function App() {
   // Multiple scan tabs management
   const [scanTabs, setScanTabs] = useState([]); // Array of {id, scanId, scanType, files, metadata, timestamp}
   const [activeTabId, setActiveTabId] = useState(null); // Currently active tab
+  
+  // File preview dialog state
+  const [showFilePreview, setShowFilePreview] = useState(false);
+  const [previewFileId, setPreviewFileId] = useState(null);
   
   const [settings, setSettings] = useState({
     general: {
@@ -91,6 +283,8 @@ function App() {
     sortBy: 'name',
     sortOrder: 'asc',
     searchQuery: '',
+    sizeFilter: 'all',
+    dateFilter: 'all',
   });
 
   const [scanProgress, setScanProgress] = useState({
@@ -100,6 +294,8 @@ function App() {
     totalSectors: 0,
     filesFound: 0,
     estimatedTimeRemaining: '0 minutes',
+    currentPass: 0,
+    expectedTime: 'Calculating...',
   });
 
   const [recoveryProgress, setRecoveryProgress] = useState({
@@ -122,7 +318,39 @@ function App() {
   });
 
   // Recent activities tracking
-  const [recentActivities, setRecentActivities] = useState([]);
+  const [recentActivities, setRecentActivities] = useState(() => {
+    // Load from localStorage on initial render
+    try {
+      const saved = localStorage.getItem('restorex_recent_activities');
+      return saved ? JSON.parse(saved) : [];
+    } catch (error) {
+      console.error('Failed to load recent activities:', error);
+      return [];
+    }
+  });
+  
+  // Save recent activities to localStorage whenever they change
+  useEffect(() => {
+    try {
+      localStorage.setItem('restorex_recent_activities', JSON.stringify(recentActivities));
+    } catch (error) {
+      console.error('Failed to save recent activities:', error);
+    }
+  }, [recentActivities]);
+
+  // Load settings from localStorage on mount
+  useEffect(() => {
+    try {
+      const savedSettings = localStorage.getItem('restorex_settings');
+      if (savedSettings) {
+        const parsed = JSON.parse(savedSettings);
+        setSettings(parsed);
+        console.log('Settings loaded from localStorage:', parsed);
+      }
+    } catch (error) {
+      console.error('Failed to load settings from localStorage:', error);
+    }
+  }, []);
 
   // Load drives on mount
   useEffect(() => {
@@ -162,15 +390,49 @@ function App() {
   useEffect(() => {
     const unsubscribeScan = subscribe('scan_progress', (data) => {
       console.log('WebSocket scan_progress update:', data);
+      
+      // Extract scan_stats if available
+      const scanStats = data.scan_stats || {};
+      
       setScanProgress(prev => ({
         ...prev,
         progress: data.progress || 0,
-        currentSector: data.currentSector || 0,
-        totalSectors: data.totalSectors || 0,
+        currentSector: scanStats.scanned_sectors || data.currentSector || 0,
+        totalSectors: scanStats.total_sectors || data.totalSectors || 0,
         filesFound: data.filesFound || 0,
+        currentPass: scanStats.current_pass || 0,
+        expectedTime: scanStats.expected_time || 'Calculating...',
         estimatedTimeRemaining: data.estimatedTimeRemaining || '0 minutes',
-        isScanning: data.status === 'running'
+        isScanning: data.status === 'running' || data.status === undefined
       }));
+
+      // Handle scan cancellation
+      if (data.status === 'cancelled' && currentScanId) {
+        console.log('Scan cancelled via WebSocket - checking for partial results');
+        
+        // Check if there are any files found
+        if (data.filesFound > 0) {
+          console.log(`Partial results available: ${data.filesFound} files`);
+          // Load partial results
+          loadScanResults(currentScanId).then(() => {
+            showNotification('warning', 'Scan Cancelled', `Scan was cancelled. Found ${data.filesFound} files so far. You can still recover these files.`);
+          });
+        } else {
+          console.log('No files found before cancellation');
+          showNotification('warning', 'Scan Cancelled', 'The scan was cancelled with no files found yet.');
+        }
+        
+        setShowScanProgress(false);
+        setScanProgress({
+          isScanning: false,
+          progress: 0,
+          currentSector: 0,
+          totalSectors: 0,
+          filesFound: 0,
+          estimatedTimeRemaining: '0 minutes',
+        });
+        setCurrentScanId(null);
+      }
 
       // If scan completed, load the results and close dialog
       if (data.status === 'completed' && currentScanId) {
@@ -215,6 +477,15 @@ function App() {
         
         setFiles(prevFiles => prevFiles.map(file =>
           file.isSelected ? { ...file, status: 'recovered', isSelected: false } : file
+        ));
+        
+        // Update active tab's files as well
+        setScanTabs(prevTabs => prevTabs.map(tab => 
+          tab.id === activeTabId 
+            ? { ...tab, files: tab.files.map(file => 
+                file.isSelected ? { ...file, status: 'recovered', isSelected: false } : file
+              )}
+            : tab
         ));
         
         // Update statistics
@@ -318,8 +589,83 @@ function App() {
       const scanStatus = await apiService.getScanStatus(scanId);
       console.log('Scan status:', scanStatus);
       
+      const scanType = scanStatus.scan_type || 'normal';
+      
+      // Check if this is a cluster or health scan that needs report data
+      if (scanType === 'cluster' || scanType === 'health') {
+        console.log(`Loading ${scanType} scan report data...`);
+        
+        try {
+          const reportData = await apiService.getScanReport(scanId);
+          console.log('Report data loaded:', reportData);
+          
+          // Create a tab with report data
+          const reportTab = {
+            id: Date.now(),
+            scanId: scanId,
+            scanType: scanType,
+            scanStatus: 'completed',
+            files: [],
+            metadata: null,
+            reportData: reportData,
+            timestamp: new Date(),
+            name: `${scanType === 'cluster' ? 'Cluster' : 'Health'} Report`
+          };
+          
+          // Add the new tab
+          setScanTabs(prev => {
+            const alreadyExists = prev.find(tab => tab.scanId === scanId);
+            if (alreadyExists) {
+              console.log('Tab already exists, skipping duplicate');
+              return prev;
+            }
+            return [...prev, reportTab];
+          });
+          setActiveTabId(reportTab.id);
+          
+          // Remove from loading set
+          loadingScanIds.current.delete(scanId);
+          
+          // Navigate to files view to show the report
+          navigateToView('files');
+          
+          showNotification('success', `${scanType === 'cluster' ? 'Cluster' : 'Health'} Scan Complete`, 
+            `Report generated successfully. View the report in the new tab.`);
+          
+          return;
+        } catch (error) {
+          console.error('Failed to load report:', error);
+          showNotification('error', 'Report Load Failed', error.message);
+          loadingScanIds.current.delete(scanId);
+          return;
+        }
+      }
+      
+      // For regular scans, load file results
       const results = await apiService.getScanResults(scanId, {});
       console.log('Scan results loaded:', results.length, 'files');
+      
+      // Load thumbnails for image files
+      const filesWithThumbnails = await Promise.all(
+        results.map(async (file) => {
+          // Only load thumbnails for image types
+          const imageTypes = ['png', 'jpg', 'jpeg', 'heic', 'raw', 'gif', 'bmp', 'webp'];
+          if (imageTypes.includes(file.type?.toLowerCase())) {
+            try {
+              const blob = await apiService.getFileThumbnail(file.id, 150);
+              if (blob) {
+                const url = URL.createObjectURL(blob);
+                return { ...file, thumbnail: url };
+              }
+            } catch (error) {
+              console.error(`Failed to load thumbnail for file ${file.id}:`, error);
+            }
+          }
+          return file;
+        })
+      );
+      
+      console.log('Thumbnails loaded for image files');
       
       // Extract metadata from scan status
       const metadata = scanStatus.metadata || {};
@@ -330,10 +676,11 @@ function App() {
         id: Date.now(), // Unique tab ID
         scanId: scanId,
         scanType: scanStatus.scan_type || 'normal',
-        files: results,
+        scanStatus: scanStatus.status || 'completed', // Track if scan was completed or cancelled
+        files: filesWithThumbnails,
         metadata: Object.keys(metadata).length > 0 ? metadata : null,
         timestamp: new Date(),
-        name: getScanTabName(scanStatus.scan_type, results.length)
+        name: getScanTabName(scanStatus.scan_type, filesWithThumbnails.length, scanStatus.status)
       };
       
       // Add the new tab and set it as active using functional update to prevent race conditions
@@ -352,13 +699,13 @@ function App() {
       loadingScanIds.current.delete(scanId);
       
       // Update current view data with the new tab's data
-      setFiles(results);
-      setScanResults(generateScanResultsTree(results));
+      setFiles(filesWithThumbnails);
+      setScanResults(generateScanResultsTree(filesWithThumbnails));
       setScanMetadata(newTab.metadata);
       setCurrentScanTypeForReports(newTab.scanType);
       
       // Check if this is a health scan (no files but has health report)
-      if (results.length === 0 && scanStatus.status === 'completed') {
+      if (filesWithThumbnails.length === 0 && scanStatus.status === 'completed') {
         console.log('Scan completed with no files - might be a health/diagnostic scan');
         navigateToView('files');
         
@@ -383,7 +730,8 @@ function App() {
           const scanTypeNames = {
             cluster: 'Cluster analysis',
             forensic: 'Forensic analysis',
-            signature: 'Signature scan'
+            signature: 'Signature scan',
+            carving: 'File carving scan'
           };
           addRecentActivity({
             id: Date.now(),
@@ -406,6 +754,8 @@ function App() {
         sortBy: 'name',
         sortOrder: 'asc',
         searchQuery: '',
+        sizeFilter: 'all',
+        dateFilter: 'all',
       });
       
       // Show success notification
@@ -415,6 +765,7 @@ function App() {
       const scanTypeNames = {
         normal: 'Normal scan',
         deep: 'Deep scan',
+        carving: 'File carving scan',
         cluster: 'Cluster scan',
         health: 'Health scan',
         signature: 'Signature scan',
@@ -439,10 +790,11 @@ function App() {
   };
 
   // Helper function to generate tab names
-  const getScanTabName = (scanType, fileCount) => {
+  const getScanTabName = (scanType, fileCount, scanStatus = 'completed') => {
     const typeNames = {
       normal: 'Normal',
       deep: 'Deep',
+      carving: 'File Carving',
       cluster: 'Cluster',
       health: 'Health',
       signature: 'Signature',
@@ -450,17 +802,20 @@ function App() {
     };
     
     const typeName = typeNames[scanType] || 'Scan';
+    const statusSuffix = scanStatus === 'cancelled' ? ' [Partial]' : '';
     
     if (fileCount > 0) {
-      return `${typeName} (${fileCount} files)`;
+      return `${typeName} (${fileCount} files)${statusSuffix}`;
     } else {
-      return `${typeName} Report`;
+      return `${typeName} Report${statusSuffix}`;
     }
   };
 
   // Function to switch to a different tab
   const switchToTab = (tabId) => {
     const tab = scanTabs.find(t => t.id === tabId);
+    console.log('🔄 Switching to tab:', { tabId, tab, hasReportData: !!tab?.reportData });
+    
     if (tab) {
       setActiveTabId(tabId);
       setFiles(tab.files);
@@ -474,7 +829,15 @@ function App() {
         sortBy: 'name',
         sortOrder: 'asc',
         searchQuery: '',
+        sizeFilter: 'all',
+        dateFilter: 'all',
       });
+      
+      // If it's a report tab, make sure we're in files view
+      if (tab.reportData) {
+        console.log('📊 This is a report tab, ensuring files view is active');
+        navigateToView('files');
+      }
     }
   };
 
@@ -556,6 +919,44 @@ function App() {
       return false;
     }
     
+    // Size filter
+    if (filterOptions.sizeFilter && filterOptions.sizeFilter !== 'all') {
+      const sizeBytes = file.sizeBytes || 0;
+      switch (filterOptions.sizeFilter) {
+        case 'small': // < 1 MB
+          if (sizeBytes >= 1024 * 1024) return false;
+          break;
+        case 'medium': // 1 MB - 10 MB
+          if (sizeBytes < 1024 * 1024 || sizeBytes >= 10 * 1024 * 1024) return false;
+          break;
+        case 'large': // > 10 MB
+          if (sizeBytes < 10 * 1024 * 1024) return false;
+          break;
+      }
+    }
+    
+    // Date filter
+    if (filterOptions.dateFilter && filterOptions.dateFilter !== 'all') {
+      const fileDate = new Date(file.dateModified);
+      const now = new Date();
+      const daysDiff = Math.floor((now - fileDate) / (1000 * 60 * 60 * 24));
+      
+      switch (filterOptions.dateFilter) {
+        case 'today':
+          if (daysDiff > 1) return false;
+          break;
+        case 'week':
+          if (daysDiff > 7) return false;
+          break;
+        case 'month':
+          if (daysDiff > 30) return false;
+          break;
+        case 'year':
+          if (daysDiff > 365) return false;
+          break;
+      }
+    }
+    
     return true;
   }).sort((a, b) => {
     const { sortBy, sortOrder } = filterOptions;
@@ -584,6 +985,9 @@ function App() {
   const selectedFiles = files.filter(f => f.isSelected);
   const totalSelectedSize = selectedFiles.reduce((acc, file) => acc + file.sizeBytes, 0);
   
+  // Calculate total size of filtered files
+  const totalFilteredSize = filteredFiles.reduce((acc, file) => acc + file.sizeBytes, 0);
+  
   const formatBytes = (bytes) => {
     const units = ['B', 'KB', 'MB', 'GB'];
     let size = bytes;
@@ -606,6 +1010,15 @@ function App() {
       console.log('File toggled:', fileId, 'Selected count:', selectedCount);
       return updated;
     });
+    
+    // Update active tab's files as well
+    setScanTabs(prevTabs => prevTabs.map(tab => 
+      tab.id === activeTabId 
+        ? { ...tab, files: tab.files.map(file => 
+            file.id === fileId ? { ...file, isSelected: !file.isSelected } : file
+          )}
+        : tab
+    ));
   };
 
   const handleCategorySelect = (category) => {
@@ -621,22 +1034,71 @@ function App() {
   const handleStartNewScan = (scanType = 'normal') => {
     console.log('handleStartNewScan called with scan type:', scanType);
     navigateToView('files');
-    // Store the selected scan type for the drive selection dialog
+    // Store the selected scan type
     setSelectedScanType(scanType);
+    
+    // Use simple drive selection dialog for all scan types
+    // Normal scan will use default options (partition 1, FAT/NTFS filesystem, default output path)
     setShowDriveSelection(true);
   };
 
-  const handleStartScan = async (driveId, scanType) => {
+  // Handler for recovery wizard (kept for backward compatibility, but no longer used)
+  const handleWizardStartRecovery = async (drive, options = {}) => {
+    console.log('Wizard starting recovery:', { drive, options });
+    setShowRecoveryWizard(false);
+    
+    // Call handleStartScan with 'normal' scan type
+    await handleStartScan(drive.id, 'normal', options);
+  };
+
+  const handleStartScan = async (driveId, scanType, options = {}) => {
     try {
-      console.log('Starting scan:', { driveId, scanType });
+      console.log('Starting scan:', { driveId, scanType, options });
       setShowDriveSelection(false);
       
+      // Merge scan options with sensible defaults
+      const scanOptions = {
+        fileTypes: options.fileTypes || (filterOptions.fileType ? [filterOptions.fileType] : undefined),
+        // Default options for Python-based recovery
+        partition: options.partition || '1',  // Default to partition 1
+        filesystem: options.filesystem || 'other',  // Default to FAT/NTFS/HFS+
+        outputPath: options.outputPath || settings.general.defaultOutputPath || 'C:\\RecoveredFiles',
+        ...options
+      };
+      
+      console.log('Scan options with defaults:', scanOptions);
+      
       // Start the scan via API
-      const response = await apiService.startScan(driveId, scanType, {
-        fileTypes: filterOptions.fileType ? [filterOptions.fileType] : []
-      });
+      const response = await apiService.startScan(driveId, scanType, scanOptions);
       
       console.log('Scan started successfully:', response);
+      
+      // Get drive name for activity log
+      const drive = drives.find(d => d.id === driveId);
+      const driveName = drive ? drive.name : driveId;
+      
+      // Get friendly scan type name
+      const scanTypeNames = {
+        'normal': 'Normal Scan',
+        'deep': 'Deep Scan',
+        'quick': 'Quick Scan',
+        'carving': 'Signature File Carving',
+        'cluster': 'Cluster Scan',
+        'health': 'Disk Health Scan'
+      };
+      const scanTypeName = scanTypeNames[scanType] || scanType;
+      
+      // Add activity for scan start
+      addRecentActivity({
+        id: `scan-start-${response.scanId}`,
+        title: `${scanTypeName} Started`,
+        description: `Scanning drive ${driveName}`,
+        icon: 'info',
+        timestamp: new Date().toISOString(),
+        scanId: response.scanId,
+        driveId: driveId,
+        scanType: scanType
+      });
       
       setCurrentScanId(response.scanId);
       setScanProgress({
@@ -658,11 +1120,28 @@ function App() {
             clearInterval(pollInterval);
             if (status.status === 'completed') {
               console.log('Scan completed (via polling), loading results...');
+              console.log('Full status object:', status);
               
               // Check if we've already handled this scan completion
               if (!scanCompletedIds.has(response.scanId)) {
                 setScanCompletedIds(prev => new Set(prev).add(response.scanId));
+                
+                // Load results for all scan types (including cluster/health)
                 await loadScanResults(response.scanId);
+                
+                // Add activity for scan completion
+                const filesCount = status.files_count || status.files_found || 0;
+                addRecentActivity({
+                  id: `scan-complete-${response.scanId}`,
+                  title: `${scanTypeName} Completed`,
+                  description: `Found ${filesCount} file${filesCount !== 1 ? 's' : ''} on ${driveName}`,
+                  icon: 'success',
+                  timestamp: new Date().toISOString(),
+                  scanId: response.scanId,
+                  driveId: driveId,
+                  scanType: scanType,
+                  filesFound: filesCount
+                });
                 
                 // Update statistics
                 setStatistics(prev => ({
@@ -678,10 +1157,65 @@ function App() {
               }, 1500);
             } else if (status.status === 'failed') {
               setShowScanProgress(false);
+              
+              // Add activity for scan failure
+              addRecentActivity({
+                id: `scan-failed-${response.scanId}`,
+                title: `${scanTypeName} Failed`,
+                description: `Error scanning ${driveName}: ${status.error || 'Unknown error'}`,
+                icon: 'error',
+                timestamp: new Date().toISOString(),
+                scanId: response.scanId,
+                driveId: driveId,
+                scanType: scanType
+              });
+              
               showNotification('error', 'Scan Failed', status.error || 'Unknown error');
             } else if (status.status === 'cancelled') {
+              console.log('Scan cancelled (via polling) - checking for partial results');
               setShowScanProgress(false);
-              showNotification('warning', 'Scan Cancelled', 'The scan was cancelled by user.');
+              
+              // Try to load partial results if any files were found
+              if (status.files_found && status.files_found > 0) {
+                console.log(`Loading partial results from polling: ${status.files_found} files`);
+                
+                try {
+                  await loadScanResults(response.scanId);
+                  
+                  // Add activity for cancelled scan with partial results
+                  addRecentActivity({
+                    id: `scan-cancelled-${response.scanId}`,
+                    title: `${scanTypeName} Cancelled`,
+                    description: `Partial results: ${status.files_found} file${status.files_found !== 1 ? 's' : ''} found on ${driveName}`,
+                    icon: 'warning',
+                    timestamp: new Date().toISOString(),
+                    scanId: response.scanId,
+                    driveId: driveId,
+                    scanType: scanType,
+                    filesFound: status.files_found
+                  });
+                  
+                  showNotification('warning', 'Scan Cancelled - Partial Results Available', 
+                    `Found ${status.files_found} files before cancellation. You can view and recover these files.`);
+                } catch (error) {
+                  console.error('Failed to load partial results:', error);
+                  showNotification('warning', 'Scan Cancelled', 'The scan was cancelled. Unable to load partial results.');
+                }
+              } else {
+                // Add activity for cancelled scan with no results
+                addRecentActivity({
+                  id: `scan-cancelled-${response.scanId}`,
+                  title: `${scanTypeName} Cancelled`,
+                  description: `Scan cancelled on ${driveName} with no files found`,
+                  icon: 'warning',
+                  timestamp: new Date().toISOString(),
+                  scanId: response.scanId,
+                  driveId: driveId,
+                  scanType: scanType
+                });
+                
+                showNotification('warning', 'Scan Cancelled', 'The scan was cancelled with no files found yet.');
+              }
             }
           }
         } catch (error) {
@@ -728,6 +1262,17 @@ function App() {
       
       console.log('Recovery started successfully:', response);
       
+      // Add activity for recovery start
+      addRecentActivity({
+        id: `recovery-start-${response.recoveryId}`,
+        title: 'File Recovery Started',
+        description: `Recovering ${selectedFiles.length} file${selectedFiles.length !== 1 ? 's' : ''}`,
+        icon: 'info',
+        timestamp: new Date().toISOString(),
+        recoveryId: response.recoveryId,
+        fileCount: selectedFiles.length
+      });
+      
       setCurrentRecoveryId(response.recoveryId);
       setRecoveryProgress({
         isRecovering: true,
@@ -751,8 +1296,38 @@ function App() {
               const recoveredCount = selectedFiles.length;
               const recoveredSize = selectedFiles.reduce((sum, f) => sum + f.sizeBytes, 0);
               
+              // Format size for display
+              const formatBytes = (bytes) => {
+                if (bytes === 0) return '0 B';
+                const k = 1024;
+                const sizes = ['B', 'KB', 'MB', 'GB'];
+                const i = Math.floor(Math.log(bytes) / Math.log(k));
+                return `${(bytes / Math.pow(k, i)).toFixed(1)} ${sizes[i]}`;
+              };
+              
+              // Add activity for recovery completion
+              addRecentActivity({
+                id: `recovery-complete-${response.recoveryId}`,
+                title: 'File Recovery Completed',
+                description: `Successfully recovered ${recoveredCount} file${recoveredCount !== 1 ? 's' : ''} (${formatBytes(recoveredSize)})`,
+                icon: 'success',
+                timestamp: new Date().toISOString(),
+                recoveryId: response.recoveryId,
+                fileCount: recoveredCount,
+                size: recoveredSize
+              });
+              
               setFiles(prevFiles => prevFiles.map(file =>
                 file.isSelected ? { ...file, status: 'recovered', isSelected: false } : file
+              ));
+              
+              // Update active tab's files as well
+              setScanTabs(prevTabs => prevTabs.map(tab => 
+                tab.id === activeTabId 
+                  ? { ...tab, files: tab.files.map(file => 
+                      file.isSelected ? { ...file, status: 'recovered', isSelected: false } : file
+                    )}
+                  : tab
               ));
               
               // Update statistics
@@ -856,27 +1431,33 @@ function App() {
 
   const handleSaveSettings = (newSettings) => {
     setSettings(newSettings);
-    // In production, this would save to your C++ backend or local storage
-    console.log('Settings saved:', newSettings);
+    // Save to localStorage for persistence
+    try {
+      localStorage.setItem('restorex_settings', JSON.stringify(newSettings));
+      console.log('Settings saved to localStorage:', newSettings);
+    } catch (error) {
+      console.error('Failed to save settings to localStorage:', error);
+    }
   };
 
   return (
-    <div className="h-screen bg-gray-50 flex flex-col">
-      {/* Notification Box */}
-      {notification && (
-        <NotificationBox
-          type={notification.type}
-          title={notification.title}
-          message={notification.message}
-          onClose={() => {
-            if (notificationTimeoutId) {
-              clearTimeout(notificationTimeoutId);
-              setNotificationTimeoutId(null);
-            }
-            setNotification(null);
-          }}
-        />
-      )}
+    <>
+      <div className="h-screen bg-gray-50 flex flex-col">
+        {/* Notification Box */}
+        {notification && (
+          <NotificationBox
+            type={notification.type}
+            title={notification.title}
+            message={notification.message}
+            onClose={() => {
+              if (notificationTimeoutId) {
+                clearTimeout(notificationTimeoutId);
+                setNotificationTimeoutId(null);
+              }
+              setNotification(null);
+            }}
+          />
+        )}
 
       {/* Window Header */}
       <Header 
@@ -919,8 +1500,50 @@ function App() {
           />
         ) : (
           <div className="flex-1 flex flex-col">
-            {/* Scan Reports Panel - Shows FIRST when there's metadata (health/cluster/forensic) */}
-            {scanMetadata && (
+            {/* Check if active tab has report data (cluster/health scan) */}
+            {(() => {
+              console.log('🎯 FILES VIEW RENDERING - currentView:', currentView);
+              const activeTab = scanTabs.find(t => t.id === activeTabId);
+              console.log('🔍 Checking active tab:', { 
+                activeTabId, 
+                activeTab, 
+                hasReportData: activeTab?.reportData ? 'YES' : 'NO',
+                scanType: activeTab?.scanType,
+                allTabs: scanTabs.map(t => ({ id: t.id, name: t.name, hasReport: !!t.reportData }))
+              });
+              
+              if (activeTab && activeTab.reportData) {
+                console.log('✅ Rendering report for tab:', activeTab.name);
+                // Display report directly in the main content area without dialog wrapper
+                const reportData = activeTab.reportData;
+                const scanType = activeTab.scanType;
+                
+                return (
+                  <div className="flex-1 overflow-y-auto bg-gray-50 p-6">
+                    <div className="bg-white rounded-xl shadow-sm w-full max-w-6xl mx-auto p-6">
+                      {/* Report Header */}
+                      <div className="flex items-center gap-3 mb-6 pb-4 border-b border-gray-200">
+                        <Activity className="w-6 h-6 text-blue-600" />
+                        <h3 className="text-xl font-bold text-gray-900">
+                          {scanType === 'cluster' ? 'Cluster Map Report' : 'Drive Health Report'}
+                        </h3>
+                      </div>
+                      
+                      {/* Report Content - Render based on scan type */}
+                      {scanType === 'cluster' ? (
+                        <ClusterReportContent reportData={reportData} />
+                      ) : (
+                        <HealthReportContent reportData={reportData} />
+                      )}
+                    </div>
+                  </div>
+                );
+              }
+              return null;
+            })()}
+            
+            {/* Scan Reports Panel - Shows when there's metadata (but no dedicated report tab) */}
+            {scanMetadata && !scanTabs.find(t => t.id === activeTabId)?.reportData && (
               <div className="border-b border-gray-200 bg-gray-50">
                 <ScanReportsPanel 
                   scanMetadata={scanMetadata}
@@ -929,17 +1552,31 @@ function App() {
               </div>
             )}
             
-            {/* Only show Filter Bar and File Grid if there are files (not for health/cluster/forensic scans) */}
-            {files.length > 0 && (
+            {/* Only show Filter Bar and File Grid if there are files and no report data */}
+            {files.length > 0 && !scanTabs.find(t => t.id === activeTabId)?.reportData && (
               <>
                 {/* Filter Bar */}
                 <FilterBar
                   filterOptions={filterOptions}
                   onFilterChange={setFilterOptions}
                   fileCount={filteredFiles.length}
-                  totalSize="4.21 MB"
+                  totalSize={formatBytes(totalFilteredSize)}
                   viewMode={viewMode}
                   onViewModeChange={setViewMode}
+                  isPartialResults={scanTabs.find(t => t.id === activeTabId)?.scanStatus === 'cancelled'}
+                  onResetAll={() => {
+                    // Deselect all files
+                    setFiles(prev => prev.map(file => ({ ...file, isSelected: false })));
+                    
+                    // Update active tab if exists
+                    if (activeTabId !== null) {
+                      setScanTabs(prev => prev.map(tab => 
+                        tab.id === activeTabId
+                          ? { ...tab, files: tab.files.map(file => ({ ...file, isSelected: false })) }
+                          : tab
+                      ));
+                    }
+                  }}
                 />
 
                 {/* File Grid */}
@@ -956,7 +1593,7 @@ function App() {
             )}
 
             {/* Footer - Only show when there are files */}
-            {files.length > 0 && (
+            {files.length > 0 && !scanTabs.find(t => t.id === activeTabId)?.reportData && (
               <Footer
                 selectedCount={selectedFiles.length}
                 totalSize={formatBytes(totalSelectedSize)}
@@ -974,14 +1611,22 @@ function App() {
             file={selectedFile}
             onClose={() => setSelectedFileId(null)}
             onRecover={handleRecoverSingle}
+            onPreview={(fileId) => {
+              setPreviewFileId(fileId);
+              setShowFilePreview(true);
+            }}
           />
         )}
       </div>
 
       {/* Dialogs */}
+      {/* Drive Selection Dialog - For all scan types with sensible defaults */}
       <DriveSelectionDialog
         isOpen={showDriveSelection}
-        onClose={() => setShowDriveSelection(false)}
+        onClose={() => {
+          setShowDriveSelection(false);
+          navigateToView('dashboard');
+        }}
         onStartScan={handleStartScan}
         drives={drives}
         initialScanType={selectedScanType}
@@ -993,13 +1638,87 @@ function App() {
         onCancel={async () => {
           if (currentScanId) {
             try {
+              console.log('Cancelling scan:', currentScanId);
+              
+              // Get current files found count before cancelling
+              const filesFoundSoFar = scanProgress.filesFound;
+              
               await apiService.cancelScan(currentScanId);
+              console.log('Scan cancelled successfully');
+              
+              // Close the progress dialog first
+              setShowScanProgress(false);
+              
+              // Wait a bit for backend to save partial results
+              await new Promise(resolve => setTimeout(resolve, 1000));
+              
+              // Try to load partial results if any files were found
+              if (filesFoundSoFar > 0) {
+                console.log(`Loading partial results: ${filesFoundSoFar} files found before cancellation`);
+                
+                try {
+                  await loadScanResults(currentScanId);
+                  
+                  // Show notification about partial results
+                  showNotification('warning', 'Scan Cancelled - Partial Results Available', 
+                    `Found ${filesFoundSoFar} files before cancellation. You can view and recover these files.`);
+                  
+                  // Add to recent activities
+                  addRecentActivity({
+                    id: Date.now(),
+                    type: 'scan_cancelled',
+                    icon: 'warning',
+                    title: 'Scan cancelled (partial results)',
+                    description: `Stopped early with ${filesFoundSoFar} files found`,
+                    timestamp: new Date()
+                  });
+                  
+                  // Don't navigate away - stay on results page
+                  console.log('Partial results loaded, staying on results page');
+                  
+                } catch (error) {
+                  console.error('Failed to load partial results:', error);
+                  showNotification('warning', 'Scan Cancelled', 'The scan was cancelled. Unable to load partial results.');
+                  navigateToView('dashboard');
+                }
+              } else {
+                // No files found, show notification and go to dashboard
+                showNotification('warning', 'Scan Cancelled', 'The scan was cancelled with no files found yet.');
+                
+                // Add to recent activities
+                addRecentActivity({
+                  id: Date.now(),
+                  type: 'scan_cancelled',
+                  icon: 'warning',
+                  title: 'Scan cancelled',
+                  description: 'The scan was stopped by user',
+                  timestamp: new Date()
+                });
+                
+                // Navigate back to dashboard
+                navigateToView('dashboard');
+              }
+              
+              // Reset scan state
+              setCurrentScanId(null);
+              setScanProgress({
+                isScanning: false,
+                progress: 0,
+                currentSector: 0,
+                totalSectors: 0,
+                filesFound: 0,
+                estimatedTimeRemaining: '0 minutes',
+              });
+              
             } catch (error) {
               console.error('Failed to cancel scan:', error);
+              showNotification('error', 'Cancel Failed', `Failed to cancel scan: ${error.message}`);
             }
+          } else {
+            console.warn('No active scan to cancel');
+            setShowScanProgress(false);
+            setScanProgress(prev => ({ ...prev, isScanning: false }));
           }
-          setShowScanProgress(false);
-          setScanProgress(prev => ({ ...prev, isScanning: false }));
         }}
         progress={scanProgress}
       />
@@ -1021,19 +1740,80 @@ function App() {
         progress={recoveryProgress}
       />
 
-      <SettingsDialog
-        isOpen={showSettings}
-        onClose={() => setShowSettings(false)}
-        settings={settings}
-        onSave={handleSaveSettings}
-      />
-
       <ExplorerDialog
         isOpen={showExplorer}
         onClose={() => setShowExplorer(false)}
         initialPath={settings.general.defaultOutputPath}
       />
-    </div>
+
+      <FilePreviewDialog
+        isOpen={showFilePreview}
+        onClose={() => {
+          setShowFilePreview(false);
+          setPreviewFileId(null);
+        }}
+        fileId={previewFileId}
+      />
+
+      <ScanReportDialog
+        isOpen={showScanReport}
+        onClose={() => {
+          setShowScanReport(false);
+          setReportScanId(null);
+          setReportScanType('');
+        }}
+        scanId={reportScanId}
+        scanType={reportScanType}
+      />
+      </div>
+
+      {/* Dialogs rendered outside main container to avoid stacking context issues */}
+      <SettingsDialog
+        isOpen={showSettings}
+        onClose={() => setShowSettings(false)}
+        settings={settings}
+        onSave={handleSaveSettings}
+        onBrowse={(mode) => {
+          setFolderPickerMode(mode);
+          setShowFolderPicker(true);
+        }}
+      />
+
+      <FolderPickerDialog
+        isOpen={showFolderPicker}
+        onClose={() => setShowFolderPicker(false)}
+        onSelect={(path) => {
+          // Update the appropriate setting
+          if (folderPickerMode === 'output') {
+            setSettings(prev => ({
+              ...prev,
+              general: {
+                ...prev.general,
+                defaultOutputPath: path
+              }
+            }));
+          } else if (folderPickerMode === 'temp') {
+            setSettings(prev => ({
+              ...prev,
+              general: {
+                ...prev.general,
+                tempPath: path
+              }
+            }));
+          }
+          setShowFolderPicker(false);
+          setFolderPickerMode(null);
+        }}
+        initialPath={
+          folderPickerMode === 'output' 
+            ? settings.general.defaultOutputPath 
+            : folderPickerMode === 'temp'
+              ? settings.general.tempPath
+              : 'C:\\Users'
+        }
+        title={folderPickerMode === 'output' ? 'Select Output Directory' : 'Select Temporary Directory'}
+      />
+    </>
   );
 }
 

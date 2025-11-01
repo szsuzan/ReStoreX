@@ -1,5 +1,5 @@
 import os
-from typing import Optional
+from pathlib import Path
 
 
 class Settings:
@@ -12,10 +12,6 @@ class Settings:
         "CORS_ORIGINS", 
         "http://localhost:5173,http://localhost:3000,http://127.0.0.1:5173"
     ).split(",")
-    
-    # TestDisk/PhotoRec paths
-    TESTDISK_PATH: Optional[str] = os.getenv("TESTDISK_PATH") or None
-    PHOTOREC_PATH: Optional[str] = os.getenv("PHOTOREC_PATH") or None
     
     # Directories
     TEMP_DIR: str = os.getenv("TEMP_DIR", "./temp")
@@ -35,3 +31,4 @@ class Settings:
 
 
 settings = Settings()
+

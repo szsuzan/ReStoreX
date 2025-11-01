@@ -34,6 +34,8 @@
  * @property {'name' | 'size' | 'date' | 'recovery'} sortBy
  * @property {'asc' | 'desc'} sortOrder
  * @property {string} searchQuery
+ * @property {string} [sizeFilter] - 'small' | 'medium' | 'large' | 'all'
+ * @property {string} [dateFilter] - 'today' | 'week' | 'month' | 'year' | 'all'
  */
 
 /**
@@ -53,6 +55,8 @@
  * @property {number} totalSectors
  * @property {number} filesFound
  * @property {string} estimatedTimeRemaining
+ * @property {number} [currentPass]
+ * @property {string} [expectedTime]
  */
 
 /**

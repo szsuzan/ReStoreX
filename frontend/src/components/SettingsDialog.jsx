@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { 
   X, 
   Settings, 
@@ -21,12 +21,38 @@ import {
  * @param {() => void} props.onClose
  * @param {Object} props.settings
  * @param {(settings: Object) => void} props.onSave
+ * @param {(mode: 'output' | 'temp') => void} props.onBrowse - Callback when browse button clicked
  */
-export function SettingsDialog({ isOpen, onClose, settings, onSave }) {
+export function SettingsDialog({ isOpen, onClose, settings, onSave, onBrowse }) {
   const [activeTab, setActiveTab] = useState('general');
   const [localSettings, setLocalSettings] = useState(settings);
 
+  // Sync localSettings when settings prop changes
+  useEffect(() => {
+    if (settings) {
+      console.log('SettingsDialog: Settings received:', settings);
+      setLocalSettings(settings);
+    }
+  }, [settings]);
+
+  console.log('SettingsDialog render - isOpen:', isOpen, 'localSettings:', localSettings);
+  console.log('Safety checks:', {
+    hasLocalSettings: !!localSettings,
+    hasGeneral: !!(localSettings && localSettings.general),
+    hasRecovery: !!(localSettings && localSettings.recovery),
+    hasPerformance: !!(localSettings && localSettings.performance),
+    hasNotifications: !!(localSettings && localSettings.notifications),
+    hasAdvanced: !!(localSettings && localSettings.advanced)
+  });
+
   if (!isOpen) return null;
+
+  // Safety check - don't render if localSettings is not properly initialized
+  if (!localSettings || !localSettings.general || !localSettings.recovery || 
+      !localSettings.performance || !localSettings.notifications || !localSettings.advanced) {
+    console.log('SettingsDialog: localSettings not initialized properly');
+    return null;
+  }
 
   const tabs = [
     { id: 'general', label: 'General', icon: Settings },
@@ -90,7 +116,13 @@ export function SettingsDialog({ isOpen, onClose, settings, onSave }) {
                 onChange={(e) => updateSetting('general', 'defaultOutputPath', e.target.value)}
                 className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
-              <button className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              <button 
+                onClick={() => {
+                  onBrowse('output');
+                }}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                title="Browse for folder"
+              >
                 <Folder className="w-4 h-4" />
               </button>
             </div>
@@ -107,7 +139,13 @@ export function SettingsDialog({ isOpen, onClose, settings, onSave }) {
                 onChange={(e) => updateSetting('general', 'tempPath', e.target.value)}
                 className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
               />
-              <button className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors">
+              <button 
+                onClick={() => {
+                  onBrowse('temp');
+                }}
+                className="px-4 py-2 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors"
+                title="Browse for folder"
+              >
                 <Folder className="w-4 h-4" />
               </button>
             </div>
@@ -515,9 +553,42 @@ export function SettingsDialog({ isOpen, onClose, settings, onSave }) {
     }
   };
 
+  console.log('SettingsDialog: ABOUT TO RETURN JSX');
+
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl shadow-2xl w-[800px] h-[600px] max-w-[90vw] max-h-[90vh] flex flex-col">
+    <div 
+      style={{ 
+        position: 'fixed',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        backgroundColor: 'rgba(0, 0, 0, 0.5)',
+        zIndex: 99999,
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+      }}
+      onClick={(e) => {
+        console.log('Overlay clicked');
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div 
+        style={{
+          backgroundColor: 'white',
+          borderRadius: '12px',
+          boxShadow: '0 25px 50px -12px rgba(0, 0, 0, 0.25)',
+          width: '800px',
+          height: '600px',
+          maxWidth: '90vw',
+          maxHeight: '90vh',
+          display: 'flex',
+          flexDirection: 'column',
+          position: 'relative',
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between p-6 border-b border-gray-200">
           <div className="flex items-center gap-3">
@@ -527,7 +598,10 @@ export function SettingsDialog({ isOpen, onClose, settings, onSave }) {
             <h2 className="text-xl font-semibold text-gray-900">ReStoreX Settings</h2>
           </div>
           <button
-            onClick={onClose}
+            onClick={() => {
+              console.log('Close button clicked');
+              onClose();
+            }}
             className="p-2 hover:bg-gray-100 rounded-lg transition-colors"
           >
             <X className="w-5 h-5 text-gray-500" />

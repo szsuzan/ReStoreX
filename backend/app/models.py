@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List, Optional, Literal
+from pydantic import BaseModel, Field, ConfigDict
+from typing import List, Optional, Literal, Union, Any
 from datetime import datetime
 
 
@@ -29,14 +29,19 @@ class RecoveredFile(BaseModel):
 
 
 class ScanOptions(BaseModel):
-    fileTypes: Optional[List[str]] = None
+    model_config = ConfigDict(extra='allow')  # Allow additional fields
+    
+    fileTypes: Optional[Union[dict, list]] = None  # Can be dict or list
     deepScan: bool = False
     skipBadSectors: bool = True
+    partition: Optional[str] = None  # Added for drive partition
+    filesystem: Optional[str] = None  # Added for filesystem type
+    outputPath: Optional[str] = None  # Added for output path
 
 
 class ScanRequest(BaseModel):
     driveId: str
-    scanType: Literal['normal', 'deep', 'cluster', 'health', 'signature', 'forensic']
+    scanType: Literal['quick', 'normal', 'deep', 'carving', 'cluster', 'health', 'signature', 'forensic']
     options: Optional[ScanOptions] = ScanOptions()
 
 

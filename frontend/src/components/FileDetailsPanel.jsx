@@ -7,8 +7,9 @@ import { HexViewer } from './HexViewer';
  * @param {import('../types/index.js').RecoveredFile | null} props.file
  * @param {() => void} props.onClose
  * @param {(fileId: string) => void} props.onRecover
+ * @param {(fileId: string) => void} props.onPreview
  */
-export function FileDetailsPanel({ file, onClose, onRecover }) {
+export function FileDetailsPanel({ file, onClose, onRecover, onPreview }) {
   const [activeTab, setActiveTab] = React.useState('details');
 
   if (!file) return null;
@@ -165,21 +166,27 @@ export function FileDetailsPanel({ file, onClose, onRecover }) {
               <HardDrive className="w-4 h-4" />
               Sector
             </span>
-            <span className="text-gray-800 font-mono">{file.sector?.toLocaleString()}</span>
+            <span className="text-gray-800 font-mono">
+              {file.sector && file.sector > 0 ? file.sector.toLocaleString() : '-'}
+            </span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-gray-600 flex items-center gap-2">
               <Ruler className="w-4 h-4" />
               Cluster
             </span>
-            <span className="text-gray-800 font-mono">{file.cluster?.toLocaleString()}</span>
+            <span className="text-gray-800 font-mono">
+              {file.cluster && file.cluster > 0 ? file.cluster.toLocaleString() : '-'}
+            </span>
           </div>
           <div className="flex justify-between items-center">
             <span className="text-gray-600 flex items-center gap-2">
               <Calendar className="w-4 h-4" />
               Inode
             </span>
-            <span className="text-gray-800 font-mono">{file.inode?.toLocaleString()}</span>
+            <span className="text-gray-800 font-mono">
+              {file.inode && file.inode > 0 ? file.inode.toLocaleString() : '-'}
+            </span>
           </div>
         </div>
       </div>
@@ -235,15 +242,11 @@ export function FileDetailsPanel({ file, onClose, onRecover }) {
         </button>
         
         <button 
-          disabled={!file.thumbnail}
-          className={`w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors ${
-            file.thumbnail 
-              ? 'bg-gray-100 hover:bg-gray-200 text-gray-700' 
-              : 'bg-gray-50 text-gray-400 cursor-not-allowed'
-          }`}
+          onClick={() => onPreview(file.id)}
+          className="w-full flex items-center justify-center gap-2 px-4 py-3 rounded-lg text-sm font-medium transition-colors bg-gray-100 hover:bg-gray-200 text-gray-700"
         >
           <Eye className="w-4 h-4" />
-          {file.thumbnail ? 'Preview' : 'Preview Not Available'}
+          Preview File
         </button>
       </div>
         </>

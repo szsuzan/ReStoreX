@@ -102,6 +102,17 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
       features: ['Quick file detection', 'Recent deletions', 'High success rate']
     },
     {
+      id: 'carving',
+      title: 'Signature File Carving Scan',
+      description: 'Smart recovery of deleted photos, videos, documents & audio files',
+      icon: FileSearch,
+      color: 'cyan',
+      estimatedTime: '10-25 minutes',
+      recommended: true,
+      features: ['Photos & Videos', 'Documents (PDF, DOCX)', 'Audio files', 'No system files'],
+      safeMode: true
+    },
+    {
       id: 'deep',
       title: 'Deep Scan',
       description: 'Comprehensive sector-by-sector analysis for maximum file recovery',
@@ -132,16 +143,6 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
       features: ['SMART analysis', 'Bad sector detection', 'Health assessment']
     },
     {
-      id: 'signature',
-      title: 'File Signature Scan',
-      description: 'Raw file carving based on file signatures and headers',
-      icon: FileSearch,
-      color: 'indigo',
-      estimatedTime: '20-60 minutes',
-      recommended: false,
-      features: ['File carving', 'Signature detection', 'Raw recovery']
-    },
-    {
       id: 'forensic',
       title: 'Forensic Scan',
       description: 'Professional forensic analysis with detailed logging',
@@ -159,6 +160,11 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
         primary: 'bg-blue-600 hover:bg-blue-700 text-white',
         secondary: 'bg-blue-50 text-blue-700 border-blue-200',
         icon: 'text-blue-600'
+      },
+      cyan: {
+        primary: 'bg-cyan-600 hover:bg-cyan-700 text-white',
+        secondary: 'bg-cyan-50 text-cyan-700 border-cyan-200',
+        icon: 'text-cyan-600'
       },
       purple: {
         primary: 'bg-purple-600 hover:bg-purple-700 text-white',
@@ -374,6 +380,14 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
                         Recommended
                       </div>
                     )}
+                    
+                    {/* Safe Mode Badge */}
+                    {option.safeMode && (
+                      <div className="absolute -top-2 -left-2 bg-green-600 text-white text-xs px-2 py-1 rounded-full font-medium flex items-center gap-1">
+                        <Shield className="w-3 h-3" />
+                        Safe
+                      </div>
+                    )}
 
                     {/* Icon */}
                     <div className={`w-12 h-12 rounded-lg flex items-center justify-center mb-4 ${
@@ -467,21 +481,21 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
                       const days = Math.floor(diff / 86400000);
 
                       if (minutes < 1) return 'Just now';
-                      if (minutes < 60) return `${minutes} minute${minutes > 1 ? 's' : ''} ago`;
-                      if (hours < 24) return `${hours} hour${hours > 1 ? 's' : ''} ago`;
-                      return `${days} day${days > 1 ? 's' : ''} ago`;
+                      if (minutes < 60) return `${minutes}m ago`;
+                      if (hours < 24) return `${hours}h ago`;
+                      return `${days}d ago`;
                     };
 
                     return (
-                      <div key={activity.id} className="flex items-center gap-3">
-                        <div className={`w-8 h-8 ${getActivityBgColor()} rounded-lg flex items-center justify-center`}>
+                      <div key={activity.id} className="flex items-start gap-3 p-3 hover:bg-gray-50 rounded-lg transition-colors">
+                        <div className={`w-8 h-8 ${getActivityBgColor()} rounded-lg flex items-center justify-center flex-shrink-0`}>
                           {getActivityIcon()}
                         </div>
-                        <div className="flex-1">
-                          <p className="text-sm font-medium text-gray-900">{activity.title}</p>
-                          <p className="text-xs text-gray-600">{activity.description}</p>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-medium text-gray-900 truncate">{activity.title}</p>
+                          <p className="text-xs text-gray-600 mt-0.5">{activity.description}</p>
                         </div>
-                        <span className="text-xs text-gray-500">{getTimeAgo(activity.timestamp)}</span>
+                        <span className="text-xs text-gray-500 flex-shrink-0">{getTimeAgo(activity.timestamp)}</span>
                       </div>
                     );
                   })}
@@ -628,9 +642,10 @@ export function Dashboard({ onStartScan, drives, drivesLoading = false, statisti
               <h3 className="text-lg font-semibold text-gray-900 mb-2">Recovery Tips</h3>
               <div className="space-y-2 text-sm text-gray-700">
                 <p>• <strong>Stop using the drive immediately</strong> to prevent overwriting deleted files</p>
-                <p>• <strong>Start with Normal Scan</strong> for recently deleted files - it's faster and often sufficient</p>
-                <p>• <strong>Use Deep Scan</strong> only when Normal Scan doesn't find your files</p>
-                <p>• <strong>Check drive health</strong> before recovery if you suspect hardware issues</p>
+                <p>• <strong>File Carving Scan</strong> - Best for recovering deleted photos, videos, documents & audio (Safe Mode)</p>
+                <p>• <strong>Normal Scan</strong> - Fast recovery for recently deleted files</p>
+                <p>• <strong>Deep Scan</strong> - Use only when other scans don't find your files (takes longer)</p>
+                <p>• <strong>All scans are read-only</strong> - They never write to or modify your source drive</p>
                 <p>• <strong>Save recovered files</strong> to a different drive to avoid data corruption</p>
               </div>
             </div>

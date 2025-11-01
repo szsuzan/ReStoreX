@@ -72,51 +72,42 @@ class RecoveryService:
                     self._add_log(recovery_id, "Recovery cancelled by user")
                     break
                 
-                # Get file metadata from cache or use default
+                # Get file metadata from cache
                 file_metadata = self.file_metadata_cache.get(file_id, {})
                 file_name = file_metadata.get('name', f"recovered_file_{i+1}.dat")
                 file_type = file_metadata.get('type', 'dat').lower()
+                file_path_from_scan = file_metadata.get('path', '')
                 
                 recovery_info["current_file"] = file_name
                 
                 self._add_log(recovery_id, f"Recovering {file_name}...")
                 
-                # Create actual file (mock data for now)
                 try:
-                    # Create subdirectories if needed
+                    # Determine output location
                     if options.get('createSubdirectories', True):
                         type_folder = os.path.join(output_path, file_type.upper())
                         os.makedirs(type_folder, exist_ok=True)
-                        file_path = os.path.join(type_folder, file_name)
+                        dest_file_path = os.path.join(type_folder, file_name)
                     else:
-                        file_path = os.path.join(output_path, file_name)
+                        dest_file_path = os.path.join(output_path, file_name)
                     
-                    # Create mock file content (in real implementation, recover actual data)
-                    mock_data = f"Recovered file: {file_name}\nFile ID: {file_id}\nRecovered at: {datetime.now()}\n".encode('utf-8')
-                    mock_data += b'\x00' * (1024 * 100)  # Add 100KB of data
+                    # If the file was already recovered by PhotoRec (in temp location),
+                    # copy it to the final destination
+                    if file_path_from_scan and os.path.exists(file_path_from_scan):
+                        # Copy the already recovered file
+                        shutil.copy2(file_path_from_scan, dest_file_path)
+                        self._add_log(recovery_id, f"Successfully recovered {file_name} to {dest_file_path}")
+                    else:
+                        # File not found in scan results
+                        # This could happen if the scan temp directory was cleaned up
+                        # Log a warning
+                        self._add_log(recovery_id, f"Warning: Source file not found for {file_name}. File may need to be re-scanned.")
+                        logger.warning(f"Recovery source file not found: {file_path_from_scan}")
+                        continue
                     
-                    with open(file_path, 'wb') as f:
-                        f.write(mock_data)
-                    
-                    self._add_log(recovery_id, f"Successfully recovered {file_name} to {file_path}")
                 except Exception as e:
                     self._add_log(recovery_id, f"Failed to recover {file_name}: {str(e)}")
-                    logger.error(f"Failed to create file {file_path}: {e}")
-                    
-                    # Create mock file content (in real implementation, recover actual data)
-                    mock_data = f"Recovered file {i+1}\nFile ID: {file_id}\nRecovered at: {datetime.now()}\n".encode('utf-8')
-                    mock_data += b'\x00' * (1024 * 100)  # Add 100KB of data
-                    
-                    with open(file_path, 'wb') as f:
-                        f.write(mock_data)
-                    
-                    self._add_log(recovery_id, f"Successfully recovered {file_name} to {file_path}")
-                except Exception as e:
-                    self._add_log(recovery_id, f"Failed to recover {file_name}: {str(e)}")
-                    logger.error(f"Failed to create file {file_path}: {e}")
-                
-                # Simulate recovery time
-                await asyncio.sleep(0.5)
+                    logger.error(f"Failed to recover file {file_name}: {e}")
                 
                 # Update progress
                 recovery_info["files_recovered"] = i + 1
@@ -124,13 +115,16 @@ class RecoveryService:
                 
                 # Broadcast progress
                 await self._broadcast_progress(recovery_id)
+                
+                # Small delay to prevent overwhelming the system
+                await asyncio.sleep(0.1)
             
             if recovery_info["status"] == "cancelled":
                 recovery_info["status"] = "cancelled"
             else:
                 recovery_info["status"] = "completed"
                 recovery_info["progress"] = 100.0
-                self._add_log(recovery_id, f"Recovery completed successfully. {len(file_ids)} files recovered.")
+                self._add_log(recovery_id, f"Recovery completed successfully. {recovery_info['files_recovered']} files recovered.")
             
             # Notify completion
             await self._broadcast_progress(recovery_id)

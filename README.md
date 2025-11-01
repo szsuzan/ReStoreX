@@ -17,7 +17,7 @@ A powerful, user-friendly data recovery application with a modern web interface 
 ## 🌟 Features
 
 ### 🔍 Advanced Scanning
-- **Multiple Scan Types**: Normal, Deep, Cluster, Health Check, and Signature-based scanning
+- **Multiple Scan Types**: Normal, Signature File Carving, Deep, Cluster, Health Check, and Forensic scanning
 - **Real-time Progress**: Live updates via WebSocket during scan operations
 - **Smart File Detection**: Automatic file type recognition and categorization
 - **Recovery Probability**: Intelligent estimation of file recovery chances
@@ -49,8 +49,23 @@ A powerful, user-friendly data recovery application with a modern web interface 
 - **Python 3.8+** - [Download](https://www.python.org/downloads/)
 - **Node.js 16+** - [Download](https://nodejs.org/)
 - **TestDisk/PhotoRec** - [Download](https://www.cgsecurity.org/wiki/TestDisk_Download)
+- **Administrator Rights** (Windows) - Required for real disk scanning
 
 ### One-Command Start (Windows)
+
+#### For Real Disk Scanning (Recommended) ⭐
+
+**Step 1**: Right-click `backend\start_admin.bat` → Select **"Run as administrator"**
+
+**Step 2**: In a regular terminal:
+```powershell
+cd frontend
+npm run dev
+```
+
+> **See full guide**: [RUN_AS_ADMIN_GUIDE.md](RUN_AS_ADMIN_GUIDE.md)
+
+#### For Testing/Development (Mock Mode)
 
 ```powershell
 .\start-all.bat
@@ -58,7 +73,7 @@ A powerful, user-friendly data recovery application with a modern web interface 
 
 This will:
 1. Set up the backend (if needed)
-2. Start the FastAPI server
+2. Start the FastAPI server (mock mode)
 3. Start the React development server
 4. Open the application in your browser
 
@@ -169,11 +184,12 @@ To change the backend URL, edit:
 - Click on a drive to select it
 
 ### 2. Choose Scan Type
-- **Normal Scan**: Quick scan for recently deleted files
-- **Deep Scan**: Comprehensive sector-by-sector analysis
-- **Cluster Scan**: Advanced cluster-level analysis
-- **Health Scan**: Analyze drive health and bad sectors
-- **Signature Scan**: Raw file carving based on signatures
+- **Normal Scan**: Quick scan for recently deleted files (5-15 minutes)
+- **Signature File Carving Scan**: Smart recovery of photos, videos, documents & audio files (10-25 minutes) ⭐ Recommended
+- **Deep Scan**: Comprehensive sector-by-sector analysis for maximum recovery (30-120 minutes)
+- **Cluster Scan**: View disk clusters and hex data for advanced analysis (15-45 minutes)
+- **Disk Health Scan**: Read SMART data, calculate health scores, and create surface map (10-30 minutes)
+- **Forensic Scan**: Professional forensic analysis with detailed logging (60+ minutes)
 
 ### 3. Monitor Progress
 - Watch real-time progress updates

@@ -1,3 +1,6 @@
 venv
 .env
 /recovered_files
+
+# TestDisk binaries (download separately)
+/tools/testdisk/
