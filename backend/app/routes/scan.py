@@ -96,11 +96,18 @@ async def get_scan_results(
         
         # Cache file metadata for recovery
         for file in filtered_results:
+            # Cache complete metadata including fields needed for indexed file recovery
             recovery_service.cache_file_metadata(file.id, {
                 'name': file.name,
                 'type': file.type,
                 'size': file.sizeBytes,
-                'path': file.path
+                'path': file.path,
+                'offset': file.offset if hasattr(file, 'offset') and file.offset else 0,
+                'drive_path': file.drive_path if hasattr(file, 'drive_path') and file.drive_path else (file.drivePath if hasattr(file, 'drivePath') and file.drivePath else ''),
+                'sha256': file.sha256 if hasattr(file, 'sha256') and file.sha256 else (file.hash if hasattr(file, 'hash') and file.hash else ''),
+                'status': file.status if hasattr(file, 'status') else 'unknown',
+                'method': file.method if hasattr(file, 'method') else 'unknown',
+                'extension': file.extension if hasattr(file, 'extension') else file.type.lower() if hasattr(file, 'type') else ''
             })
         
         return filtered_results

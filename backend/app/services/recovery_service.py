@@ -66,14 +66,78 @@ class RecoveryService:
             self._add_log(recovery_id, f"Recovery started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             self._add_log(recovery_id, f"Recovering {len(file_ids)} files to {output_path}")
             
-            # Process each file
-            for i, file_id in enumerate(file_ids):
+            # Check if we have any indexed files (from deep scan)
+            indexed_files = []
+            regular_files = []
+            
+            for file_id in file_ids:
+                file_metadata = self.file_metadata_cache.get(file_id, {})
+                file_status = file_metadata.get('status', 'unknown')
+                
+                logger.info(f"File {file_id}: status={file_status}, name={file_metadata.get('name', 'unknown')}")
+                logger.debug(f"   Metadata: offset={file_metadata.get('offset', 0)}, drive_path={file_metadata.get('drive_path', 'unknown')}")
+                
+                if file_status == 'indexed':
+                    indexed_files.append(file_metadata)
+                    logger.info(f"   → Added to INDEXED files list (will read from drive)")
+                else:
+                    regular_files.append((file_id, file_metadata))
+                    logger.info(f"   → Added to REGULAR files list (will copy from temp)")
+            
+            # Process indexed files using direct drive recovery
+            if indexed_files:
+                logger.info(f"Found {len(indexed_files)} indexed files - using direct drive recovery")
+                self._add_log(recovery_id, f"Recovering {len(indexed_files)} indexed files from drive...")
+                
+                # Broadcast initial progress to show recovery dialog
+                recovery_info["current_file"] = "Starting recovery..."
+                recovery_info["progress"] = 0.0
+                await self._broadcast_progress(recovery_id)
+                
+                # Import recovery service
+                from app.services.python_recovery_service import PythonRecoveryService
+                python_recovery = PythonRecoveryService()
+                
+                # Define progress callback
+                async def indexed_progress_callback(progress_data: dict):
+                    if recovery_info["status"] == "cancelled":
+                        return
+                    
+                    current_filename = progress_data.get('current_filename', f"File {progress_data.get('current_file', 0)}")
+                    recovery_info["current_file"] = current_filename
+                    recovery_info["files_recovered"] = progress_data.get('recovered', 0)
+                    recovery_info["progress"] = progress_data.get('progress', 0)
+                    
+                    logger.info(f"📊 Progress update: {recovery_info['progress']:.1f}% - {current_filename}")
+                    
+                    await self._broadcast_progress(recovery_id)
+                    
+                    # Small delay to allow UI to update
+                    await asyncio.sleep(0.05)
+                
+                # Recover indexed files
+                result = await python_recovery.recover_selected_files(
+                    file_list=indexed_files,
+                    output_dir=output_path,
+                    progress_callback=indexed_progress_callback,
+                    create_subdirectories=options.get('createSubdirectories', True)
+                )
+                
+                self._add_log(recovery_id, f"Indexed files recovery: {result['recovered_count']} succeeded, {result['failed_count']} failed")
+                
+                if result['failed_count'] > 0:
+                    for res in result.get('results', []):
+                        if res['status'] == 'failed':
+                            self._add_log(recovery_id, f"Failed: {res['filename']} - {res.get('reason', 'Unknown error')}")
+            
+            # Process regular files (already recovered by scan)
+            successfully_copied_temp_files = []  # Track temp files to delete after successful copy
+            
+            for i, (file_id, file_metadata) in enumerate(regular_files):
                 if recovery_info["status"] == "cancelled":
                     self._add_log(recovery_id, "Recovery cancelled by user")
                     break
                 
-                # Get file metadata from cache
-                file_metadata = self.file_metadata_cache.get(file_id, {})
                 file_name = file_metadata.get('name', f"recovered_file_{i+1}.dat")
                 file_type = file_metadata.get('type', 'dat').lower()
                 file_path_from_scan = file_metadata.get('path', '')
@@ -91,16 +155,18 @@ class RecoveryService:
                     else:
                         dest_file_path = os.path.join(output_path, file_name)
                     
-                    # If the file was already recovered by PhotoRec (in temp location),
+                    # If the file was already recovered by scan (in temp location),
                     # copy it to the final destination
                     if file_path_from_scan and os.path.exists(file_path_from_scan):
                         # Copy the already recovered file
                         shutil.copy2(file_path_from_scan, dest_file_path)
                         self._add_log(recovery_id, f"Successfully recovered {file_name} to {dest_file_path}")
+                        recovery_info["files_recovered"] += 1
+                        
+                        # Mark temp file for deletion
+                        successfully_copied_temp_files.append(file_path_from_scan)
                     else:
                         # File not found in scan results
-                        # This could happen if the scan temp directory was cleaned up
-                        # Log a warning
                         self._add_log(recovery_id, f"Warning: Source file not found for {file_name}. File may need to be re-scanned.")
                         logger.warning(f"Recovery source file not found: {file_path_from_scan}")
                         continue
@@ -110,14 +176,27 @@ class RecoveryService:
                     logger.error(f"Failed to recover file {file_name}: {e}")
                 
                 # Update progress
-                recovery_info["files_recovered"] = i + 1
-                recovery_info["progress"] = ((i + 1) / len(file_ids)) * 100
+                base_progress = (len(indexed_files) / len(file_ids)) * 100 if indexed_files else 0
+                current_progress = ((i + 1) / len(regular_files)) * (100 - base_progress) if regular_files else 0
+                recovery_info["progress"] = base_progress + current_progress
                 
                 # Broadcast progress
                 await self._broadcast_progress(recovery_id)
                 
                 # Small delay to prevent overwhelming the system
                 await asyncio.sleep(0.1)
+            
+            # Clean up successfully copied temp files
+            if successfully_copied_temp_files:
+                logger.info(f"🗑️ Cleaning up {len(successfully_copied_temp_files)} temporary files after successful recovery...")
+                for temp_file in successfully_copied_temp_files:
+                    try:
+                        if os.path.exists(temp_file):
+                            os.unlink(temp_file)
+                            logger.debug(f"Deleted temp file: {temp_file}")
+                    except Exception as e:
+                        logger.warning(f"Failed to delete temp file {temp_file}: {e}")
+                logger.info("✅ Temporary files cleaned up")
             
             if recovery_info["status"] == "cancelled":
                 recovery_info["status"] = "cancelled"

@@ -83,18 +83,33 @@ export class ApiService {
   }
 
   async post(endpoint, data) {
-    const response = await fetch(`${API_BASE_URL}${endpoint}`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(data),
-    });
+    console.log(`📤 POST Request: ${API_BASE_URL}${endpoint}`);
+    console.log(`📦 Request Data:`, data);
     
-    if (!response.ok) {
-      throw new Error(`API Error: ${response.statusText}`);
+    try {
+      const response = await fetch(`${API_BASE_URL}${endpoint}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(data),
+      });
+      
+      console.log(`📥 Response Status: ${response.status} ${response.statusText}`);
+      
+      if (!response.ok) {
+        const errorText = await response.text();
+        console.error(`❌ API Error Response:`, errorText);
+        throw new Error(`API Error ${response.status}: ${response.statusText} - ${errorText}`);
+      }
+      
+      const result = await response.json();
+      console.log(`✅ Response Data:`, result);
+      return result;
+    } catch (error) {
+      console.error(`❌ POST Request Failed:`, error);
+      throw error;
     }
-    return response.json();
   }
 
   // Drive operations
@@ -128,7 +143,16 @@ export class ApiService {
   }
 
   async cancelScan(scanId) {
-    return this.post(`/scan/${scanId}/cancel`, {});
+    console.log('🛑 API Service: Sending cancel request for scan:', scanId);
+    console.log('🛑 Request URL:', `${this.baseURL}/scan/${scanId}/cancel`);
+    try {
+      const result = await this.post(`/scan/${scanId}/cancel`, {});
+      console.log('✅ API Service: Cancel response received:', result);
+      return result;
+    } catch (error) {
+      console.error('❌ API Service: Cancel request failed:', error);
+      throw error;
+    }
   }
 
   async getScanResults(scanId, options = {}) {

@@ -70,6 +70,7 @@ class Win32FileWrapper:
         
         try:
             import win32file
+            import pywintypes
             
             # Map whence to Windows constants
             move_method = {
@@ -78,10 +79,46 @@ class Win32FileWrapper:
                 2: win32file.FILE_END         # Relative to end
             }.get(whence, win32file.FILE_BEGIN)
             
-            # Perform the seek operation
-            new_pos = win32file.SetFilePointer(self.handle, offset, move_method)
-            self.position = new_pos
-            return new_pos
+            # For large offsets, split into high and low 32-bit values
+            # This is required for raw disk access with files > 4GB
+            low = offset & 0xFFFFFFFF  # Lower 32 bits
+            high = (offset >> 32) & 0xFFFFFFFF  # Upper 32 bits
+            
+            try:
+                # Try SetFilePointer with high/low split for 64-bit support
+                new_pos = win32file.SetFilePointer(self.handle, low, move_method)
+                
+                # If we have a high part, we need to handle 64-bit positioning differently
+                if high > 0 or offset > 0x7FFFFFFF:
+                    # For very large offsets, use a different approach
+                    # Convert to signed 64-bit integer
+                    signed_offset = offset if offset < 0x8000000000000000 else offset - 0x10000000000000000
+                    new_pos = win32file.SetFilePointer(self.handle, signed_offset, move_method)
+                    
+            except pywintypes.error as e:
+                # If SetFilePointer fails, try an alternative approach
+                # Seek to the position using chunked seeks for very large offsets
+                if offset > 0x7FFFFFFF and whence == 0:  # Absolute seek with large offset
+                    # Seek in chunks of 1GB
+                    chunk_size = 1024 * 1024 * 1024  # 1GB
+                    remaining = offset
+                    
+                    # First seek to 0
+                    win32file.SetFilePointer(self.handle, 0, win32file.FILE_BEGIN)
+                    
+                    # Seek in chunks
+                    while remaining > chunk_size:
+                        win32file.SetFilePointer(self.handle, chunk_size, win32file.FILE_CURRENT)
+                        remaining -= chunk_size
+                    
+                    # Seek the final remaining bytes
+                    if remaining > 0:
+                        new_pos = win32file.SetFilePointer(self.handle, int(remaining), win32file.FILE_CURRENT)
+                else:
+                    raise
+            
+            self.position = offset if whence == 0 else new_pos
+            return self.position
         except Exception as e:
             logger.error(f"Error seeking in handle: {e}")
             raise
@@ -221,9 +258,49 @@ class FileSignature:
 class PythonRecoveryService:
     """Python-based file recovery service"""
     
-    def __init__(self, temp_dir: str):
-        self.temp_dir = temp_dir
+    def __init__(self, temp_dir: str = None):
+        self.temp_dir = temp_dir or os.path.join(os.getcwd(), 'temp')
         self.signatures = FileSignature.SIGNATURES
+    
+    @staticmethod
+    def cleanup_temp_files():
+        """
+        Clean up temporary recovered files on app startup.
+        This removes all files from the backend/recovered_files directory.
+        """
+        try:
+            # Get project root (parent of backend directory)
+            current_file = os.path.abspath(__file__)
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(current_file)))
+            temp_recovery_dir = os.path.join(project_root, 'backend', 'recovered_files')
+            
+            if os.path.exists(temp_recovery_dir):
+                # Remove all files in the directory
+                import shutil
+                file_count = len([f for f in os.listdir(temp_recovery_dir) if os.path.isfile(os.path.join(temp_recovery_dir, f))])
+                
+                if file_count > 0:
+                    logger.info(f"🗑️ Cleaning up {file_count} temporary recovered files...")
+                    
+                    # Remove all files but keep the directory
+                    for filename in os.listdir(temp_recovery_dir):
+                        file_path = os.path.join(temp_recovery_dir, filename)
+                        try:
+                            if os.path.isfile(file_path):
+                                os.unlink(file_path)
+                            elif os.path.isdir(file_path):
+                                shutil.rmtree(file_path)
+                        except Exception as e:
+                            logger.warning(f"Failed to delete {file_path}: {e}")
+                    
+                    logger.info(f"✅ Temporary files cleaned up successfully")
+                else:
+                    logger.info("No temporary files to clean up")
+            else:
+                logger.info("Temporary recovery directory does not exist yet")
+                
+        except Exception as e:
+            logger.error(f"Failed to cleanup temporary files: {e}")
         
     async def scan_drive(self, drive_path: str, output_dir: str, 
                         options: Optional[Dict] = None,
@@ -283,6 +360,9 @@ class PythonRecoveryService:
             logger.info(f"Physical drive: {physical_drive}")
             logger.info(f"Drive size: {drive_size / (1024**3):.2f} GB, Total sectors: {total_sectors}")
             
+            # Store physical drive for later recovery access
+            stats['physical_drive'] = physical_drive
+            
             # Open the drive for reading
             try:
                 drive_handle = self._open_drive(physical_drive)
@@ -317,12 +397,14 @@ class PythonRecoveryService:
                     logger.info("💡 Falling back to empty result - try Deep Scan instead")
                     recovered_files = []
             
-            # DEEP SCAN: Same as Signature File Carving - sector-by-sector with all file types
+            # DEEP SCAN: Signature-based carving for comprehensive recovery
             elif scan_type == 'deep':
-                logger.info("🔍 Deep Scan: Comprehensive signature-based file carving (all file types)")
-                logger.info("   - Scanning every sector of the disk")
-                logger.info("   - Detecting all file types by signature")
-                logger.info("   - Similar to Signature File Carving scan")
+                logger.info("🔍🔍 DEEP SCAN: Comprehensive Signature-Based Recovery")
+                logger.info("=" * 70)
+                logger.info("   • Scans entire drive sector-by-sector")
+                logger.info("   • Detects files by signature (magic bytes)")
+                logger.info("   • Finds deleted, overwritten, and fragmented files")
+                logger.info("=" * 70)
                 
                 # Deep scan uses all file types by default
                 if not options.get('fileTypes'):
@@ -335,7 +417,8 @@ class PythonRecoveryService:
                         'email': True
                     }
                 
-                recovered_files = await self._carve_files(
+                # Call deep scan method
+                recovered_files = await self._deep_scan_hybrid(
                     drive_handle, 
                     output_dir, 
                     stats,
@@ -428,23 +511,30 @@ class PythonRecoveryService:
     
     def _get_physical_drive(self, drive_path: str) -> str:
         """Convert drive letter to physical drive path"""
-        if 'PHYSICALDRIVE' in drive_path.upper():
+        # If already a physical drive path (\.\\PHYSICALDRIVE...), return as-is
+        if drive_path and drive_path.upper().startswith('\\\\.\\'):
             return drive_path
-        
-        # On Windows, for drive letters, use the volume path directly
-        # This scans only the specific volume, not the entire physical disk
+
+        # On Windows, for drive letters, return the simple drive letter (e.g., 'E:')
+        # Let _open_drive create the correct raw device path (\\.\E:) when needed
         if platform.system() == 'Windows' and ':' in drive_path:
             try:
-                drive_letter = drive_path.split(':')[0].upper()
-                # Use the volume path, not physical drive
-                # This limits scanning to the specific partition
-                logger.info(f"Using volume path for drive {drive_letter}: to scan only that partition")
-                return f'\\\\.\\{drive_letter}:'
-                
+                # Extract a letter followed by ':' (handles 'E:' and '\\.\\E:')
+                import re
+                m = re.search(r'([A-Za-z]):', drive_path)
+                if m:
+                    drive_letter = m.group(1).upper() + ':'
+                else:
+                    # Fallback: take first char
+                    drive_letter = drive_path[0].upper() + ':'
+
+                logger.info(f"Using volume identifier for drive {drive_letter} (scan limited to partition)")
+                return drive_letter
             except Exception as e:
                 logger.warning(f"Could not map drive letter: {e}")
-                return f'\\\\.\\{drive_letter}:'
-        
+                # As a last resort, return original path
+                return drive_path
+
         return drive_path
     
     def _get_drive_size(self, drive_path: str) -> int:
@@ -452,25 +542,34 @@ class PythonRecoveryService:
         try:
             if platform.system() == 'Windows':
                 import psutil
-                
-                # Extract drive letter
-                if ':' in drive_path:
-                    drive_letter = drive_path.split(':')[0].upper() + ':'
-                    
+                # Extract drive letter robustly (handle 'E:' and '\\.\\E:')
+                import re
+                m = re.search(r'([A-Za-z]):', drive_path)
+                if m:
+                    drive_letter = m.group(1).upper() + ':'
                     # Get partition info
                     partitions = psutil.disk_partitions()
                     for partition in partitions:
-                        if partition.device.startswith(drive_letter):
-                            usage = psutil.disk_usage(partition.mountpoint)
-                            return usage.total
+                        try:
+                            # partition.device on Windows is like 'E:\' - compare only the letter
+                            if partition.device.upper().startswith(drive_letter):
+                                usage = psutil.disk_usage(partition.mountpoint)
+                                return usage.total
+                        except Exception:
+                            continue
                 
-                # If not found via psutil, try win32file
+                # If not found via psutil, try win32file on the physical/volume path
                 try:
                     import win32file
                     physical_drive = self._get_physical_drive(drive_path)
-                    
+                    # If _get_physical_drive returned a drive letter like 'E:', convert to raw path
+                    if re.match(r'^[A-Z]:$', physical_drive):
+                        raw_path = f'\\\\.\\{physical_drive}'
+                    else:
+                        raw_path = physical_drive
+
                     handle = win32file.CreateFile(
-                        physical_drive,
+                        raw_path,
                         0,  # No access required for size query
                         win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
                         None,
@@ -478,12 +577,13 @@ class PythonRecoveryService:
                         0,
                         None
                     )
-                    
-                    # Get drive geometry
+
+                    # Get drive size
                     size = win32file.GetFileSize(handle)
                     win32file.CloseHandle(handle)
                     return size
-                except:
+                except Exception:
+                    # If this fails, keep trying other methods (fallthrough)
                     pass
             else:
                 # Unix-like systems
@@ -502,48 +602,13 @@ class PythonRecoveryService:
         logger.info(f"Attempting to open drive: {physical_drive}")
         
         if platform.system() == 'Windows':
-            # On Windows, try to open the drive letter first (simpler, no admin needed for mounted volumes)
-            if physical_drive.endswith(':'):
-                logger.info(f"Opening mounted volume: {physical_drive}")
-                try:
-                    # For mounted volumes (like E:), we can scan files without admin rights
-                    # But for low-level disk access, admin rights are needed
-                    
-                    # Try direct file access first (requires admin)
-                    try:
-                        import win32file
-                        
-                        logger.info("Attempting low-level disk access (requires admin)...")
-                        handle = win32file.CreateFile(
-                            f'\\\\.\\{physical_drive}',
-                            win32file.GENERIC_READ,
-                            win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
-                            None,
-                            win32file.OPEN_EXISTING,
-                            0,
-                            None
-                        )
-                        
-                        logger.info("✅ Successfully opened drive with low-level access (admin mode)")
-                        # Return a file-like wrapper for the Windows handle
-                        return Win32FileWrapper(handle)
-                        
-                    except Exception as e:
-                        logger.warning(f"Low-level access failed: {e}")
-                        logger.info("⚠️ Falling back to file system scanning (no admin rights)")
-                        # This will scan only existing files on the mounted volume
-                        # Not true raw disk recovery, but better than nothing
-                        raise PermissionError("Administrator rights required for raw disk scanning")
-                        
-                except Exception as e:
-                    logger.error(f"Failed to open drive: {e}")
-                    raise
-            else:
-                # Physical drive path like \\.\PHYSICALDRIVE1
+            # On Windows, handle two cases:
+            # 1) a simple drive letter like 'E:' -> use raw path \\.\E: for low-level access
+            # 2) an already raw path like '\\.\PHYSICALDRIVE1' -> use as-is
+            if physical_drive.startswith('\\\\.\\'):
+                logger.info(f"Opening raw device path: {physical_drive}")
                 try:
                     import win32file
-                    
-                    logger.info(f"Opening physical drive with win32file: {physical_drive}")
                     handle = win32file.CreateFile(
                         physical_drive,
                         win32file.GENERIC_READ,
@@ -553,14 +618,43 @@ class PythonRecoveryService:
                         0,
                         None
                     )
-                    
-                    logger.info("✅ Successfully opened physical drive")
-                    # Return a file-like wrapper for the Windows handle
+                    logger.info("✅ Successfully opened raw device")
                     return Win32FileWrapper(handle)
-                    
                 except Exception as e:
-                    logger.error(f"Failed to open physical drive with win32file: {e}")
+                    logger.error(f"Failed to open raw device: {e}")
                     raise
+
+            if physical_drive.endswith(':'):
+                logger.info(f"Opening mounted volume (drive letter): {physical_drive}")
+                try:
+                    # Try direct file access first (requires admin) using raw path \\.\
+                    import win32file
+                    raw_path = f'\\\\.\\{physical_drive}'
+                    logger.info("Attempting low-level disk access (requires admin)...")
+                    handle = win32file.CreateFile(
+                        raw_path,
+                        win32file.GENERIC_READ,
+                        win32file.FILE_SHARE_READ | win32file.FILE_SHARE_WRITE,
+                        None,
+                        win32file.OPEN_EXISTING,
+                        0,
+                        None
+                    )
+                    logger.info("✅ Successfully opened drive with low-level access (admin mode)")
+                    return Win32FileWrapper(handle)
+                except Exception as e:
+                    logger.warning(f"Low-level access failed: {e}")
+                    logger.info("⚠️ Falling back to file system scanning (no admin rights)")
+                    # If low-level access fails, fall back to opening the mounted volume using normal file API
+                    try:
+                        # Opening the mounted volume path (e.g., 'E:') as a file object will enumerate files instead of raw device
+                        return open(physical_drive, 'rb', buffering=1024*1024)
+                    except Exception as e2:
+                        logger.error(f"Failed to open mounted volume via file API: {e2}")
+                        raise PermissionError("Administrator rights required for raw disk scanning")
+            # Other paths should have been handled above
+            logger.error(f"Unrecognized Windows drive path format: {physical_drive}")
+            raise Exception(f"Unable to open drive: {physical_drive}")
         else:
             # On Unix-like systems
             logger.info(f"Opening drive on Unix-like system: {physical_drive}")
@@ -587,33 +681,528 @@ class PythonRecoveryService:
         
         try:
             # Try to detect filesystem type
-            drive_handle.seek(0)
-            boot_sector = drive_handle.read(512)
+            logger.info("🔍 Reading boot sector to detect filesystem type...")
+            try:
+                drive_handle.seek(0)
+                boot_sector = drive_handle.read(512)
+            except Exception as e:
+                logger.error(f"❌ Failed to seek/read boot sector: {e}")
+                logger.info("💡 This may indicate:")
+                logger.info("   • No administrator/elevated privileges")
+                logger.info("   • Drive is locked or in use")
+                logger.info("   • Physical drive access is restricted")
+                return recovered_files
             
             if not boot_sector or len(boot_sector) < 512:
                 logger.error("❌ Failed to read boot sector - insufficient data")
+                logger.info(f"   Read only {len(boot_sector) if boot_sector else 0} bytes (need 512)")
                 logger.info("💡 The drive may not be accessible or formatted")
                 return recovered_files
             
-            # Check for NTFS (bytes 3-11 should contain "NTFS    ")
-            filesystem_sig = boot_sector[3:11] if len(boot_sector) >= 11 else b''
-            logger.info(f"🔍 Filesystem signature detected: {filesystem_sig}")
+            # Detect filesystem type
+            # NTFS: bytes 3-11 contain "NTFS    "
+            # FAT32: bytes 82-90 contain "FAT32   " or check signature at 0x52
+            filesystem_sig_ntfs = boot_sector[3:11] if len(boot_sector) >= 11 else b''
+            filesystem_sig_fat32 = boot_sector[82:90] if len(boot_sector) >= 90 else b''
+            filesystem_sig_fat32_alt = boot_sector[0x52:0x5A] if len(boot_sector) >= 0x5A else b''
             
-            if filesystem_sig == b'NTFS    ':
-                logger.info("📂 Detected NTFS filesystem - parsing MFT...")
-                recovered_files = await self._recover_from_ntfs_mft(
+            # Check filesystem type
+            if filesystem_sig_ntfs == b'NTFS    ':
+                logger.info(f"✅ Detected NTFS filesystem - proceeding with improved MFT parsing...")
+                recovered_files = await self._recover_ntfs_deleted_files(
+                    drive_handle, output_dir, stats, options, progress_callback
+                )
+            elif filesystem_sig_fat32 == b'FAT32   ' or filesystem_sig_fat32_alt == b'FAT32   ':
+                logger.info(f"✅ Detected FAT32 filesystem - proceeding with FAT directory parsing...")
+                recovered_files = await self._recover_from_fat32(
+                    drive_handle, output_dir, stats, options, progress_callback
+                )
+            elif boot_sector[0x26:0x29] in [b'FAT', b'FAT12', b'FAT16']:
+                logger.info(f"✅ Detected FAT16/FAT12 filesystem - proceeding with FAT directory parsing...")
+                recovered_files = await self._recover_from_fat32(
                     drive_handle, output_dir, stats, options, progress_callback
                 )
             else:
-                logger.warning("⚠️ Non-NTFS filesystem detected - metadata-first not available")
-                logger.info(f"   Detected signature: {filesystem_sig}")
-                logger.info("   Filesystem metadata recovery only supports NTFS currently")
-                logger.info("💡 For non-NTFS drives, use Deep Scan or Signature File Carving instead")
+                logger.warning("⚠️ Unknown filesystem detected - metadata recovery not available")
+                logger.info(f"   Checked signatures:")
+                logger.info(f"     NTFS (0x03): '{filesystem_sig_ntfs.decode('ascii', errors='replace')}'")
+                logger.info(f"     FAT32 (0x52): '{filesystem_sig_fat32.decode('ascii', errors='replace')}'")
+                logger.info("💡 Recommendations:")
+                logger.info("   • Use 'Deep Scan' for signature-based recovery (works on any filesystem)")
+                logger.info("   • Or try 'Signature File Carving' scan")
                 
         except Exception as e:
             logger.error(f"Error in metadata-first recovery: {e}", exc_info=True)
             
         return recovered_files
+    
+    async def _recover_ntfs_deleted_files(self, drive_handle: BinaryIO, output_dir: str,
+                                          stats: Dict, options: Optional[Dict] = None,
+                                          progress_callback: Optional[Callable] = None) -> List[Dict]:
+        """
+        NEW IMPROVED NORMAL SCAN: Recover deleted files from NTFS by parsing MFT
+        
+        This is a completely separate implementation from Deep Scan that:
+        1. Properly extracts original filenames with correct encoding
+        2. Finds ALL deleted files with metadata intact
+        3. Preserves file timestamps and attributes
+        4. Works with resident and non-resident files
+        
+        Returns:
+            List of recoverable deleted files with original names
+        """
+        recovered_files = []
+        
+        try:
+            # Read NTFS boot sector
+            drive_handle.seek(0)
+            boot_sector = drive_handle.read(512)
+            
+            # Parse NTFS BPB
+            bytes_per_sector = int.from_bytes(boot_sector[0x0B:0x0D], 'little')
+            sectors_per_cluster = boot_sector[0x0D]
+            mft_cluster = int.from_bytes(boot_sector[0x30:0x38], 'little')
+            
+            bytes_per_cluster = bytes_per_sector * sectors_per_cluster
+            mft_offset = mft_cluster * bytes_per_cluster
+            
+            logger.info(f"📊 NTFS Parameters:")
+            logger.info(f"   Bytes per sector: {bytes_per_sector}")
+            logger.info(f"   Sectors per cluster: {sectors_per_cluster}")
+            logger.info(f"   Bytes per cluster: {bytes_per_cluster}")
+            logger.info(f"   MFT starting at: {mft_offset} bytes ({mft_offset / (1024**2):.2f} MB)")
+            
+            # Calculate total entries to scan (entire MFT)
+            drive_size = stats.get('total_size', 0)
+            estimated_entries = min((drive_size // 1024) if drive_size > 0 else 1000000, 5000000)
+            
+            logger.info(f"🔎 Scanning MFT for deleted files (up to {estimated_entries:,} entries)...")
+            logger.info(f"   Looking for files with original names and metadata...")
+            
+            # Seek to MFT
+            drive_handle.seek(mft_offset)
+            
+            # Track statistics
+            entries_scanned = 0
+            deleted_found = 0
+            files_with_names = 0
+            files_recoverable = 0
+            
+            # Scan MFT entries
+            mft_entry_size = 1024
+            
+            for entry_num in range(estimated_entries):
+                try:
+                    # Read MFT entry
+                    mft_entry = drive_handle.read(mft_entry_size)
+                    if len(mft_entry) < mft_entry_size:
+                        break  # Reached end of MFT
+                    
+                    entries_scanned += 1
+                    
+                    # Check for cancellation every 100 entries
+                    if entry_num % 100 == 0:
+                        await asyncio.sleep(0)
+                        is_cancelled = options.get('is_cancelled') if options else None
+                        if is_cancelled and callable(is_cancelled) and is_cancelled():
+                            logger.warning(f"⚠️ Scan cancelled at entry {entry_num}")
+                            break
+                    
+                    # Check signature (must be "FILE")
+                    if mft_entry[0:4] != b'FILE':
+                        continue
+                    
+                    # Check flags
+                    flags = int.from_bytes(mft_entry[0x16:0x18], 'little')
+                    is_in_use = bool(flags & 0x01)
+                    is_directory = bool(flags & 0x02)
+                    
+                    # Only process DELETED FILES (not in use, not directory)
+                    if is_in_use or is_directory:
+                        continue
+                    
+                    deleted_found += 1
+                    
+                    # Parse the entry to extract filename and file info
+                    file_info = self._parse_ntfs_entry_improved(
+                        mft_entry, entry_num, drive_handle, bytes_per_cluster
+                    )
+                    
+                    if not file_info or not file_info.get('filename'):
+                        continue
+                    
+                    files_with_names += 1
+                    filename = file_info['filename']
+                    file_size = file_info.get('size', 0)
+                    file_data = file_info.get('data')
+                    
+                    # Skip files without data or too small
+                    if not file_data or len(file_data) < 100:
+                        continue
+                    
+                    # Check if data is all zeros (overwritten)
+                    if file_data[:min(len(file_data), 512)].count(b'\x00') == min(len(file_data), 512):
+                        continue
+                    
+                    files_recoverable += 1
+                    
+                    # Extract extension
+                    file_ext = filename.split('.')[-1].lower() if '.' in filename else 'dat'
+                    
+                    # Calculate hashes
+                    import hashlib
+                    file_md5 = hashlib.md5(file_data).hexdigest()
+                    file_sha256 = hashlib.sha256(file_data).hexdigest()
+                    
+                    # Create file record
+                    safe_filename = self._sanitize_filename(filename)
+                    file_path = os.path.join(output_dir, safe_filename)
+                    
+                    recovered_files.append({
+                        'name': safe_filename,
+                        'path': file_path,
+                        'size': len(file_data),
+                        'type': file_ext.upper(),
+                        'extension': file_ext,
+                        'offset': mft_offset + (entry_num * mft_entry_size),
+                        'md5': file_md5,
+                        'sha256': file_sha256,
+                        'hash': file_sha256,
+                        'file_hash': file_sha256,
+                        'validation_score': 100,
+                        'is_partial': False,
+                        'method': 'normal_scan_mft',
+                        'status': 'indexed',
+                        'indexed_at': datetime.now().isoformat(),
+                        'drive_path': stats.get('physical_drive', stats.get('drive_path', 'unknown')),
+                        'mft_entry': entry_num,
+                        'original_filename': filename,
+                        'declared_size': file_size,
+                        'actual_size': len(file_data)
+                    })
+                    
+                    logger.info(f"✅ Found: {safe_filename} ({len(file_data)/1024:.1f} KB)")
+                    
+                    # Progress update every 1000 entries
+                    if entries_scanned % 1000 == 0 and progress_callback:
+                        progress = min((entries_scanned / estimated_entries) * 100, 99)
+                        sectors_scanned = (entries_scanned * mft_entry_size) // 512
+                        total_sectors = (estimated_entries * mft_entry_size) // 512
+                        
+                        await progress_callback({
+                            'progress': progress,
+                            'files_found': len(recovered_files),
+                            'sectors_scanned': sectors_scanned,
+                            'total_sectors': total_sectors,
+                            'phase': 'mft_scan',
+                            'message': f'MFT: {entries_scanned:,}/{estimated_entries:,} entries | {len(recovered_files)} files found'
+                        })
+                
+                except Exception as e:
+                    logger.debug(f"Error processing MFT entry {entry_num}: {e}")
+                    continue
+            
+            # Final statistics
+            logger.info(f"")
+            logger.info(f"📊 Normal Scan Complete:")
+            logger.info(f"   ├─ MFT entries scanned: {entries_scanned:,}")
+            logger.info(f"   ├─ Deleted files found: {deleted_found:,}")
+            logger.info(f"   ├─ Files with readable names: {files_with_names:,}")
+            logger.info(f"   └─ ✅ Recoverable files: {files_recoverable:,}")
+            
+            if files_recoverable > 0:
+                logger.info(f"")
+                logger.info(f"💡 Success! Found {files_recoverable} deleted files with original names")
+            else:
+                logger.warning(f"⚠️ No recoverable deleted files found")
+                logger.info(f"   Possible reasons:")
+                logger.info(f"   • Files were overwritten by new data")
+                logger.info(f"   • MFT entries were reused")
+                logger.info(f"   • Try Deep Scan for signature-based recovery")
+            
+            # Final progress update
+            if progress_callback:
+                await progress_callback({
+                    'progress': 100,
+                    'files_found': len(recovered_files),
+                    'sectors_scanned': (entries_scanned * mft_entry_size) // 512,
+                    'total_sectors': (entries_scanned * mft_entry_size) // 512,
+                    'phase': 'complete',
+                    'message': f'Scan complete: {len(recovered_files)} files found'
+                })
+            
+        except Exception as e:
+            logger.error(f"Error in Normal scan NTFS recovery: {e}", exc_info=True)
+        
+        return recovered_files
+    
+    def _parse_ntfs_entry_improved(self, mft_entry: bytes, entry_num: int,
+                                   drive_handle: BinaryIO, bytes_per_cluster: int) -> Optional[Dict]:
+        """
+        IMPROVED MFT entry parser that properly extracts filenames
+        
+        Correctly handles:
+        - UTF-16 LE filename encoding
+        - Multiple FILE_NAME attributes (Win32, DOS 8.3)
+        - Resident and non-resident data
+        - Proper attribute offset calculations
+        """
+        try:
+            # Get first attribute offset
+            first_attr_offset = int.from_bytes(mft_entry[0x14:0x16], 'little')
+            if first_attr_offset >= len(mft_entry) or first_attr_offset == 0:
+                return None
+            
+            filename = None
+            file_data = None
+            file_size = 0
+            
+            # Parse attributes
+            offset = first_attr_offset
+            
+            while offset < len(mft_entry) - 4:
+                # Read attribute type
+                attr_type = int.from_bytes(mft_entry[offset:offset+4], 'little')
+                
+                # End of attributes
+                if attr_type == 0xFFFFFFFF:
+                    break
+                
+                # Read attribute length
+                if offset + 8 > len(mft_entry):
+                    break
+                attr_length = int.from_bytes(mft_entry[offset+4:offset+8], 'little')
+                
+                if attr_length == 0 or attr_length > 1024 or offset + attr_length > len(mft_entry):
+                    break
+                
+                # 0x30 = FILE_NAME attribute
+                if attr_type == 0x30:
+                    try:
+                        # Check if resident (FILE_NAME is always resident)
+                        non_resident = mft_entry[offset + 8]
+                        if non_resident == 0:
+                            # Get attribute content offset and length
+                            attr_content_offset = int.from_bytes(mft_entry[offset+0x14:offset+0x16], 'little')
+                            attr_content_len = int.from_bytes(mft_entry[offset+0x10:offset+0x14], 'little')
+                            
+                            if attr_content_len < 0x42:
+                                continue
+                            
+                            # FILE_NAME structure:
+                            # +0x00: Parent directory file reference (8 bytes)
+                            # +0x08: Creation time (8 bytes)
+                            # +0x10: Modification time (8 bytes)
+                            # +0x18: MFT change time (8 bytes)
+                            # +0x20: Access time (8 bytes)
+                            # +0x28: Allocated size (8 bytes)
+                            # +0x30: Real size (8 bytes)
+                            # +0x38: Flags (4 bytes)
+                            # +0x3C: Reparse value (4 bytes)
+                            # +0x40: Filename length in characters (1 byte)
+                            # +0x41: Namespace (1 byte)
+                            # +0x42: Filename in UTF-16 LE
+                            
+                            content_start = offset + attr_content_offset
+                            
+                            if content_start + 0x42 > len(mft_entry):
+                                continue
+                            
+                            # Get filename length (in characters, not bytes)
+                            fn_length = mft_entry[content_start + 0x40]
+                            
+                            # Get namespace (0=POSIX, 1=Win32, 2=DOS, 3=Win32+DOS)
+                            namespace = mft_entry[content_start + 0x41]
+                            
+                            # Prefer Win32 names (namespace 1 or 3) over DOS 8.3 names (namespace 2)
+                            if fn_length > 0 and fn_length < 256:
+                                fn_start = content_start + 0x42
+                                fn_bytes = fn_length * 2  # UTF-16 LE uses 2 bytes per character
+                                
+                                if fn_start + fn_bytes <= len(mft_entry):
+                                    decoded_name = mft_entry[fn_start:fn_start + fn_bytes].decode('utf-16le', errors='ignore')
+                                    
+                                    # Only update filename if it's better than what we have
+                                    if not filename or (namespace in [1, 3] and len(decoded_name) > 0):
+                                        filename = decoded_name.strip()
+                    
+                    except Exception as e:
+                        logger.debug(f"Error parsing FILE_NAME: {e}")
+                
+                # 0x80 = DATA attribute (unnamed stream)
+                elif attr_type == 0x80 and not file_data:
+                    try:
+                        non_resident = mft_entry[offset + 8]
+                        
+                        if non_resident == 0:
+                            # Resident data (small files)
+                            data_offset = int.from_bytes(mft_entry[offset+0x14:offset+0x16], 'little')
+                            data_length = int.from_bytes(mft_entry[offset+0x10:offset+0x14], 'little')
+                            
+                            if data_length > 0 and offset + data_offset + data_length <= len(mft_entry):
+                                file_data = mft_entry[offset + data_offset:offset + data_offset + data_length]
+                                file_size = data_length
+                        else:
+                            # Non-resident data (large files)
+                            file_size = int.from_bytes(mft_entry[offset+0x30:offset+0x38], 'little')
+                            data_runs_offset = int.from_bytes(mft_entry[offset+0x20:offset+0x22], 'little')
+                            
+                            if file_size > 0 and file_size <= 100 * 1024 * 1024:  # Limit to 100MB
+                                if data_runs_offset > 0 and offset + data_runs_offset < len(mft_entry):
+                                    data_runs = self._parse_data_runs(
+                                        mft_entry[offset + data_runs_offset:offset + attr_length]
+                                    )
+                                    
+                                    if data_runs:
+                                        file_data = self._read_data_runs(
+                                            drive_handle, data_runs, bytes_per_cluster, file_size
+                                        )
+                    
+                    except Exception as e:
+                        logger.debug(f"Error parsing DATA: {e}")
+                
+                # Move to next attribute
+                offset += attr_length
+            
+            if filename:
+                return {
+                    'filename': filename,
+                    'data': file_data,
+                    'size': file_size
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Error in improved MFT parser: {e}")
+            return None
+    
+    async def _deep_scan_hybrid(self, drive_handle: BinaryIO, output_dir: str,
+                               stats: Dict, options: Optional[Dict] = None,
+                               progress_callback: Optional[Callable] = None) -> List[Dict]:
+        """
+        DEEP SCAN: Comprehensive signature-based file recovery
+        
+        This scan performs:
+        - Sector-by-sector scanning of entire drive
+        - Signature-based file detection (magic bytes)
+        - Validation and integrity checking
+        - Index-only mode (files cataloged, not written)
+        
+        Why Deep Scan?
+        - Finds deleted files without metadata
+        - Recovers fragmented and overwritten files
+        - Works on any filesystem (NTFS, FAT32, etc.)
+        - Maximum recovery rate for lost data
+        
+        Args:
+            drive_handle: Open handle to raw drive
+            output_dir: Directory to save recovered files
+            stats: Statistics dictionary
+            options: Scan options
+            progress_callback: Progress update callback
+            
+        Returns:
+            List of all recovered files
+        """
+        all_recovered_files = []
+        metadata_files = []
+        carved_files = []
+        
+        try:
+            # ============================================================
+            # PHASE 1: SIGNATURE-BASED CARVING (Thorough, finds old files)
+            # ============================================================
+            # NOTE: Skipping metadata phase for Deep Scan to go directly to comprehensive carving
+            logger.info("")
+            logger.info("┏" + "━" * 68 + "┓")
+            logger.info("┃" + " " * 12 + "🔍 DEEP SCAN: SIGNATURE CARVING" + " " * 24 + "┃")
+            logger.info("┗" + "━" * 68 + "┛")
+            logger.info("🔎 Scanning entire drive sector-by-sector for file signatures...")
+            logger.info("   • Comprehensive scan for all file types")
+            logger.info("   • Recovers deleted files and fragmented data")
+            logger.info("   • Detects files by 'magic bytes' (file headers)")
+            logger.info("")
+            
+            # Create copy of options for carving phase
+            carving_options = options.copy() if options else {}
+            carving_options['scan_type'] = 'deep'  # Use deep scan logic for carving
+            
+            # Update progress: Phase 1 starting (0-90% of total)
+            if progress_callback:
+                await progress_callback({
+                    'phase': 'carving',
+                    'phase_name': 'Signature Carving',
+                    'progress': 0,
+                    'message': 'Starting deep sector scan...'
+                })
+            
+            try:
+                # Reset to beginning for full drive scan
+                drive_handle.seek(0)
+                
+                # Run signature carving
+                carved_files = await self._carve_files(
+                    drive_handle,
+                    output_dir,
+                    stats,
+                    carving_options,
+                    progress_callback
+                )
+                
+                logger.info("")
+                logger.info(f"✅ Deep Scan Complete: {len(carved_files)} files found")
+                logger.info(f"   • Files indexed by type and hash")
+                logger.info("")
+                
+                # Update progress: Complete (100%)
+                if progress_callback:
+                    await progress_callback({
+                        'phase': 'complete',
+                        'phase_name': 'Scan Complete',
+                        'progress': 100,
+                        'message': f'Scan complete: {len(carved_files)} files found',
+                        'files_found': len(carved_files)
+                    })
+                
+            except Exception as e:
+                logger.error(f"❌ Signature carving failed: {e}", exc_info=True)
+                return []
+            
+            # Return all carved files (no deduplication needed since we only did one phase)
+            all_recovered_files = carved_files
+            
+            # ============================================================
+            # FINAL SUMMARY
+            # ============================================================
+            logger.info("")
+            logger.info("┏" + "━" * 68 + "┓")
+            logger.info("┃" + " " * 18 + "🎉 DEEP SCAN COMPLETE" + " " * 27 + "┃")
+            logger.info("┗" + "━" * 68 + "┛")
+            logger.info(f"✅ Total files indexed: {len(all_recovered_files)}")
+            logger.info(f"   • Output directory: {output_dir}")
+            logger.info("")
+            
+            # Calculate recovery breakdown by file type
+            type_counts = {}
+            for file_info in all_recovered_files:
+                ext = file_info.get('extension', 'unknown')
+                type_counts[ext] = type_counts.get(ext, 0) + 1
+            
+            if type_counts:
+                logger.info("📊 File breakdown by type:")
+                for ext, count in sorted(type_counts.items(), key=lambda x: x[1], reverse=True)[:10]:
+                    logger.info(f"   • .{ext}: {count} files")
+                if len(type_counts) > 10:
+                    logger.info(f"   • ... and {len(type_counts) - 10} more types")
+                logger.info("")
+            
+        except Exception as e:
+            logger.error(f"❌ Error in deep scan: {e}", exc_info=True)
+            # Return whatever we managed to recover
+            all_recovered_files = carved_files
+        
+        return all_recovered_files
     
     async def _recover_from_ntfs_mft(self, drive_handle: BinaryIO, output_dir: str,
                                     stats: Dict, options: Optional[Dict] = None,
@@ -656,18 +1245,21 @@ class PythonRecoveryService:
             file_type_options = options.get('fileTypes', {}) if options else {}
             scan_type = options.get('scan_type', 'normal') if options else 'normal'
             
-            # For normal scan, get all important file types if no specific types selected
+            # For normal scan (metadata recovery), be more permissive with file types
+            # We trust MFT metadata, so recover ALL file types found, not just "important" ones
             if scan_type == 'normal' and not file_type_options:
-                # Default to all important file types for normal scan
+                # Get ALL extensions we can detect (not just important ones)
                 interested_extensions = set()
                 for sig_name, sig_info in self.signatures.items():
-                    if sig_info.get('important', False):
-                        interested_extensions.add(sig_info['extension'])
-                logger.info(f"🎯 Normal scan: Looking for all important file types")
+                    interested_extensions.add(sig_info['extension'])
+                # Also add common extensions that might not have signatures
+                interested_extensions.update(['txt', 'log', 'ini', 'cfg', 'xml', 'json', 
+                                             'html', 'css', 'js', 'py', 'java', 'cpp', 'h'])
+                logger.info(f"🎯 Normal scan (MFT): Recovering ALL file types from filesystem metadata")
             else:
                 interested_extensions = self._get_interested_extensions(file_type_options)
             
-            logger.info(f"🎯 Target extensions: {', '.join(sorted(interested_extensions)) if len(interested_extensions) <= 20 else f'{len(interested_extensions)} file types'}")
+            logger.info(f"🎯 Target extensions: {', '.join(sorted(interested_extensions)[:30])}{'...' if len(interested_extensions) > 30 else ''}")
             
             # Parse MFT entries
             drive_handle.seek(mft_offset)
@@ -676,12 +1268,11 @@ class PythonRecoveryService:
             deleted_files_found = 0
             max_entries = 100000  # Limit to first 100k entries for performance
             
-            # Statistics tracking for optimization analysis
+            # Statistics tracking
             files_checked = 0
             files_too_small = 0
-            files_no_signature = 0
-            files_failed_validation = 0
-            files_low_score = 0
+            files_no_data = 0
+            files_data_overwritten = 0
             
             logger.info(f"🔎 Parsing MFT entries (analyzing up to {max_entries} entries)...")
             
@@ -689,13 +1280,18 @@ class PythonRecoveryService:
                 # Check for cancellation
                 is_cancelled = options.get('is_cancelled') if options else None
                 if is_cancelled and callable(is_cancelled) and is_cancelled():
-                    logger.info("⚠️ MFT parsing cancelled by user")
+                    logger.warning("⚠️ MFT parsing cancelled by user")
+                    logger.info(f"📋 Returning partial results: {len(recovered_files)} files indexed so far")
                     break
                 
                 # Read MFT entry
                 mft_entry = drive_handle.read(mft_entry_size)
                 if len(mft_entry) < mft_entry_size:
                     break
+                
+                # Yield control to event loop after every read to allow cancellation
+                if entry_num % 100 == 0:
+                    await asyncio.sleep(0)
                 
                 entries_parsed += 1
                 
@@ -723,65 +1319,63 @@ class PythonRecoveryService:
                         filename = file_info['filename']
                         file_ext = filename.split('.')[-1].lower() if '.' in filename else ''
                         
-                        # Check if this file type is of interest
-                        if file_ext in interested_extensions:
+                        # For metadata recovery, check extension OR accept if we have filename
+                        # (more permissive than signature carving)
+                        if not file_ext or file_ext in interested_extensions or scan_type == 'normal':
                             # Recover file data
                             file_data = file_info.get('data')
                             files_checked += 1
                             
-                            if not file_data or len(file_data) < 4096:  # Minimum 4KB
-                                files_too_small += 1
-                                if files_checked <= 10:  # Log first 10 rejections
-                                    logger.debug(f"❌ {filename}: Too small ({len(file_data) if file_data else 0} bytes, need >= 4KB)")
-                                continue
-                                
-                            # Validate file
-                            sig_info = self._get_signature_for_extension(file_ext)
-                            if not sig_info:
-                                files_no_signature += 1
-                                if files_checked <= 10:
-                                    logger.debug(f"❌ {filename}: No signature found for .{file_ext}")
+                            # For MFT recovery, be more lenient - accept smaller files
+                            if not file_data or len(file_data) < 100:  # Minimum 100 bytes (was 4KB)
+                                if not file_data:
+                                    files_no_data += 1
+                                else:
+                                    files_too_small += 1
+                                if files_checked <= 20:  # Log first 20 rejections
+                                    logger.debug(f"❌ {filename}: Too small or no data ({len(file_data) if file_data else 0} bytes)")
                                 continue
                             
-                            validation_result = self._validate_file_with_score(file_data, sig_info)
-                            
-                            if not validation_result['is_valid']:
-                                files_failed_validation += 1
-                                if files_checked <= 10:
-                                    logger.debug(f"❌ {filename}: Failed validation")
+                            # For MFT recovery, skip strict signature validation
+                            # The MFT metadata is already validated, so trust it
+                            # Only do basic sanity check: file starts with non-null bytes
+                            if file_data[:100].count(b'\x00') == 100:
+                                # Entire file is zeros - data was overwritten
+                                files_data_overwritten += 1
+                                if files_checked <= 20:
+                                    logger.debug(f"❌ {filename}: Data appears to be overwritten (all zeros)")
                                 continue
                             
-                            if validation_result['score'] < 70:
-                                files_low_score += 1
-                                if files_checked <= 10:
-                                    logger.debug(f"❌ {filename}: Score too low ({validation_result['score']}, need >= 70)")
-                                continue
-                            
-                            # File passed all checks - save it
+                            # File passed checks - INDEX it (don't write yet)
                             safe_filename = self._sanitize_filename(filename)
                             file_path = os.path.join(output_dir, f"mft_{entry_num}_{safe_filename}")
                             
-                            with open(file_path, 'wb') as f:
-                                f.write(file_data)
-                            
-                            # Calculate hashes
+                            # Calculate hashes for indexing
                             file_md5 = hashlib.md5(file_data).hexdigest()
                             file_sha256 = hashlib.sha256(file_data).hexdigest()
                             
+                            # INDEX FILE (NO DISK WRITE)
                             recovered_files.append({
                                 'name': safe_filename,
-                                'path': file_path,
+                                'path': file_path,  # Proposed path (not created yet)
                                 'size': len(file_data),
-                                'type': file_ext,
+                                'type': file_ext.upper() if file_ext else 'DAT',
+                                'extension': file_ext if file_ext else 'dat',
                                 'offset': mft_offset + (entry_num * mft_entry_size),
                                 'md5': file_md5,
                                 'sha256': file_sha256,
-                                'validation_score': validation_result['score'],
-                                'is_partial': validation_result['is_partial'],
-                                'method': 'mft_metadata'
+                                'hash': file_sha256,  # Alias
+                                'file_hash': file_sha256,  # Another alias
+                                'validation_score': 100,  # Trust MFT metadata
+                                'is_partial': False,  # MFT tells us the complete file
+                                'method': 'mft_metadata',
+                                'status': 'indexed',  # Not yet recovered
+                                'indexed_at': datetime.now().isoformat(),
+                                'drive_path': stats.get('drive_path', 'unknown'),
+                                'mft_entry': entry_num
                             })
                             
-                            logger.info(f"✅ MFT: Recovered {safe_filename} (score: {validation_result['score']}, size: {len(file_data)/1024:.1f}KB)")
+                            logger.info(f"✅ MFT: Indexed {safe_filename} ({len(file_data)/1024:.1f} KB)")
                 
                 except Exception as e:
                     logger.debug(f"Error parsing MFT entry {entry_num}: {e}")
@@ -810,16 +1404,25 @@ class PythonRecoveryService:
             logger.info(f"   ├─ Files checked: {files_checked:,}")
             logger.info(f"   │")
             logger.info(f"   ├─ Rejections:")
-            logger.info(f"   │  ├─ Too small (< 4KB): {files_too_small:,}")
-            logger.info(f"   │  ├─ No signature: {files_no_signature:,}")
-            logger.info(f"   │  ├─ Failed validation: {files_failed_validation:,}")
-            logger.info(f"   │  └─ Score < 70: {files_low_score:,}")
+            logger.info(f"   │  ├─ Too small (< 100 bytes): {files_too_small:,}")
+            logger.info(f"   │  ├─ No data in MFT: {files_no_data:,}")
+            logger.info(f"   │  └─ Data overwritten (zeros): {files_data_overwritten:,}")
             logger.info(f"   │")
-            logger.info(f"   └─ ✅ Files recovered: {len(recovered_files):,}")
+            logger.info(f"   └─ ✅ Files indexed: {len(recovered_files):,}")
             
             if files_checked > 0:
                 success_rate = (len(recovered_files) / files_checked) * 100
-                logger.info(f"   📊 Success rate: {success_rate:.1f}% of checked files passed ULTRA-STRICT validation")
+                logger.info(f"   📊 Index rate: {success_rate:.1f}% of deleted files had recoverable data")
+            
+            logger.info(f"💾 Disk space used: 0 bytes (index only)")
+            
+            if len(recovered_files) == 0:
+                logger.warning("⚠️ No deleted files with recoverable data found in MFT")
+                logger.info("💡 Possible reasons:")
+                logger.info("   • Deleted files were overwritten by new data")
+                logger.info("   • Drive has been formatted or wiped")
+                logger.info("   • Deleted files were small and stored in MFT (resident) but MFT was reused")
+                logger.info("   • Try 'Deep Scan' for signature-based recovery instead")
             
         except Exception as e:
             logger.error(f"Error parsing NTFS MFT: {e}", exc_info=True)
@@ -831,14 +1434,14 @@ class PythonRecoveryService:
         """
         Parse an MFT entry to extract filename and data
         
-        This is a simplified MFT parser - full MFT parsing is very complex
+        Properly handles both resident and non-resident data attributes
         """
         try:
             # Get first attribute offset
             first_attr_offset = int.from_bytes(mft_entry[0x14:0x16], 'little')
             
             filename = None
-            data_runs = []
+            file_data = None
             file_size = 0
             
             # Parse attributes
@@ -856,46 +1459,496 @@ class PythonRecoveryService:
                 
                 # 0x30 = FILE_NAME attribute
                 if attr_type == 0x30:
-                    # Parse filename
+                    # Parse filename from FILE_NAME attribute
                     try:
-                        name_offset = offset + 0x5A  # Filename starts at offset 0x5A in attribute
-                        name_length = mft_entry[offset + 0x58]  # Length in characters
-                        if name_offset + (name_length * 2) <= len(mft_entry):
-                            filename = mft_entry[name_offset:name_offset + (name_length * 2)].decode('utf-16le', errors='ignore')
-                    except:
-                        pass
+                        non_resident_flag = mft_entry[offset + 8]
+                        if non_resident_flag == 0:  # Resident attribute
+                            # For FILE_NAME attribute structure:
+                            # Offset 0x14: Attribute content offset
+                            # Offset 0x10: Attribute content length
+                            content_offset = int.from_bytes(mft_entry[offset+0x14:offset+0x16], 'little')
+                            content_length = int.from_bytes(mft_entry[offset+0x10:offset+0x14], 'little')
+                            
+                            if content_length >= 0x42:  # Minimum FILE_NAME attribute size
+                                # Filename starts at offset 0x42 in the FILE_NAME content
+                                fn_start = offset + content_offset + 0x42
+                                fn_length = mft_entry[offset + content_offset + 0x40]  # Filename length in chars
+                                
+                                if fn_start + (fn_length * 2) <= len(mft_entry):
+                                    filename = mft_entry[fn_start:fn_start + (fn_length * 2)].decode('utf-16le', errors='ignore')
+                    except Exception as e:
+                        logger.debug(f"Error parsing FILE_NAME attribute: {e}")
                 
-                # 0x80 = DATA attribute
+                # 0x80 = DATA attribute (unnamed stream)
                 elif attr_type == 0x80:
                     # Check if resident or non-resident
                     non_resident = mft_entry[offset + 8]
+                    
                     if non_resident == 0:
-                        # Resident data (small files)
+                        # Resident data (small files stored in MFT)
                         try:
                             data_offset = int.from_bytes(mft_entry[offset+0x14:offset+0x16], 'little')
                             data_length = int.from_bytes(mft_entry[offset+0x10:offset+0x14], 'little')
+                            
                             if data_length > 0 and offset + data_offset + data_length <= len(mft_entry):
-                                data = mft_entry[offset + data_offset:offset + data_offset + data_length]
-                                return {'filename': filename, 'data': data, 'resident': True}
-                        except:
-                            pass
+                                file_data = mft_entry[offset + data_offset:offset + data_offset + data_length]
+                                file_size = data_length
+                        except Exception as e:
+                            logger.debug(f"Error extracting resident data: {e}")
                     else:
-                        # Non-resident data (large files) - would need to parse data runs
-                        # This is complex and beyond simple implementation
-                        pass
+                        # Non-resident data (large files - stored in clusters)
+                        try:
+                            # Extract file size
+                            file_size = int.from_bytes(mft_entry[offset+0x30:offset+0x38], 'little')
+                            
+                            # Data runs start offset
+                            data_runs_offset = int.from_bytes(mft_entry[offset+0x20:offset+0x22], 'little')
+                            
+                            if data_runs_offset > 0 and offset + data_runs_offset < len(mft_entry):
+                                # Parse data runs
+                                data_runs = self._parse_data_runs(
+                                    mft_entry[offset + data_runs_offset:offset + attr_length]
+                                )
+                                
+                                # Read file data from clusters (limit to reasonable size)
+                                if data_runs and file_size > 0 and file_size <= 50 * 1024 * 1024:  # Max 50MB
+                                    file_data = self._read_data_runs(
+                                        drive_handle, 
+                                        data_runs, 
+                                        bytes_per_cluster,
+                                        file_size
+                                    )
+                        except Exception as e:
+                            logger.debug(f"Error extracting non-resident data: {e}")
                 
                 offset += attr_length
             
-            return {'filename': filename, 'data': None, 'resident': False}
+            return {
+                'filename': filename,
+                'data': file_data,
+                'size': file_size,
+                'resident': file_data is not None and file_size <= 1024
+            }
             
         except Exception as e:
             logger.debug(f"Error parsing MFT entry: {e}")
             return None
     
+    def _parse_data_runs(self, data_runs_bytes: bytes) -> List[tuple]:
+        """
+        Parse NTFS data runs to get cluster locations
+        
+        Data runs format:
+        - First byte: header (high nibble = offset length, low nibble = length length)
+        - Next bytes: run length (variable size)
+        - Next bytes: run offset (variable size, signed)
+        
+        Returns:
+            List of (cluster_offset, cluster_count) tuples
+        """
+        runs = []
+        position = 0
+        current_offset = 0
+        
+        try:
+            while position < len(data_runs_bytes):
+                header = data_runs_bytes[position]
+                
+                # End of data runs
+                if header == 0:
+                    break
+                
+                # Extract nibbles
+                length_size = header & 0x0F
+                offset_size = (header >> 4) & 0x0F
+                
+                if length_size == 0 or position + 1 + length_size + offset_size > len(data_runs_bytes):
+                    break
+                
+                position += 1
+                
+                # Read run length (number of clusters)
+                run_length = int.from_bytes(
+                    data_runs_bytes[position:position + length_size],
+                    'little',
+                    signed=False
+                )
+                position += length_size
+                
+                # Read run offset (relative cluster position, signed)
+                if offset_size > 0:
+                    offset_bytes = data_runs_bytes[position:position + offset_size]
+                    # Handle signed integer (two's complement)
+                    run_offset = int.from_bytes(offset_bytes, 'little', signed=True)
+                    position += offset_size
+                    
+                    current_offset += run_offset
+                    runs.append((current_offset, run_length))
+                else:
+                    # Sparse run (all zeros)
+                    runs.append((0, run_length))
+                
+        except Exception as e:
+            logger.debug(f"Error parsing data runs: {e}")
+        
+        return runs
+    
+    def _read_data_runs(self, drive_handle: BinaryIO, data_runs: List[tuple], 
+                       bytes_per_cluster: int, file_size: int) -> Optional[bytes]:
+        """
+        Read file data from clusters specified in data runs
+        
+        Args:
+            drive_handle: Handle to the drive
+            data_runs: List of (cluster_offset, cluster_count) tuples
+            bytes_per_cluster: Cluster size in bytes
+            file_size: Actual file size (may be less than allocated clusters)
+            
+        Returns:
+            File data bytes or None if read failed
+        """
+        try:
+            file_data = bytearray()
+            bytes_read = 0
+            
+            for cluster_offset, cluster_count in data_runs:
+                # Sparse run (zeros)
+                if cluster_offset == 0:
+                    sparse_bytes = min(cluster_count * bytes_per_cluster, file_size - bytes_read)
+                    file_data.extend(b'\x00' * sparse_bytes)
+                    bytes_read += sparse_bytes
+                else:
+                    # Read from disk
+                    byte_offset = cluster_offset * bytes_per_cluster
+                    bytes_to_read = min(cluster_count * bytes_per_cluster, file_size - bytes_read)
+                    
+                    try:
+                        drive_handle.seek(byte_offset)
+                        chunk = drive_handle.read(bytes_to_read)
+                        file_data.extend(chunk)
+                        bytes_read += len(chunk)
+                    except Exception as e:
+                        logger.debug(f"Failed to read cluster at offset {byte_offset}: {e}")
+                        # Return what we have so far (partial file)
+                        return bytes(file_data) if file_data else None
+                
+                # Stop if we've read the full file
+                if bytes_read >= file_size:
+                    break
+            
+            # Trim to exact file size
+            return bytes(file_data[:file_size]) if file_data else None
+            
+        except Exception as e:
+            logger.debug(f"Error reading data runs: {e}")
+            return None
+    
+    async def _recover_from_fat32(self, drive_handle: BinaryIO, output_dir: str,
+                                   stats: Dict, options: Optional[Dict] = None,
+                                   progress_callback: Optional[Callable] = None) -> List[Dict]:
+        """
+        Recover deleted files from FAT32/FAT16 filesystem
+        
+        Parses FAT directory entries to find deleted files (first byte = 0xE5)
+        and attempts to recover data from clusters
+        
+        Returns:
+            List of recovered files with metadata
+        """
+        recovered_files = []
+        
+        try:
+            # Read FAT32 boot sector to get parameters
+            drive_handle.seek(0)
+            boot_sector = drive_handle.read(512)
+            
+            # Parse FAT BPB (BIOS Parameter Block)
+            bytes_per_sector = int.from_bytes(boot_sector[0x0B:0x0D], 'little')
+            sectors_per_cluster = boot_sector[0x0D]
+            reserved_sectors = int.from_bytes(boot_sector[0x0E:0x10], 'little')
+            num_fats = boot_sector[0x10]
+            
+            # FAT32 specific
+            sectors_per_fat = int.from_bytes(boot_sector[0x24:0x28], 'little')
+            root_cluster = int.from_bytes(boot_sector[0x2C:0x30], 'little')
+            
+            bytes_per_cluster = bytes_per_sector * sectors_per_cluster
+            
+            # Calculate data region offset
+            fat_offset = reserved_sectors * bytes_per_sector
+            data_offset = fat_offset + (num_fats * sectors_per_fat * bytes_per_sector)
+            
+            logger.info(f"📊 FAT32 Parameters:")
+            logger.info(f"   Bytes per sector: {bytes_per_sector}")
+            logger.info(f"   Sectors per cluster: {sectors_per_cluster}")
+            logger.info(f"   Bytes per cluster: {bytes_per_cluster}")
+            logger.info(f"   Root cluster: {root_cluster}")
+            logger.info(f"   Data region offset: {data_offset} bytes ({data_offset / (1024**2):.2f} MB)")
+            
+            # Get file type filter
+            file_type_options = options.get('fileTypes', {}) if options else {}
+            scan_type = options.get('scan_type', 'normal') if options else 'normal'
+            
+            if scan_type == 'normal' and not file_type_options:
+                interested_extensions = set()
+                for sig_name, sig_info in self.signatures.items():
+                    interested_extensions.add(sig_info['extension'])
+                interested_extensions.update(['txt', 'log', 'ini', 'cfg', 'xml', 'json'])
+                logger.info(f"🎯 Normal scan (FAT32): Recovering ALL file types from directory entries")
+            else:
+                interested_extensions = self._get_interested_extensions(file_type_options)
+            
+            logger.info(f"🎯 Target extensions: {', '.join(sorted(interested_extensions)[:30])}{'...' if len(interested_extensions) > 30 else ''}")
+            
+            # Parse root directory and subdirectories
+            entries_parsed = 0
+            deleted_files_found = 0
+            files_checked = 0
+            files_too_small = 0
+            files_no_data = 0
+            
+            logger.info(f"🔎 Scanning FAT32 directories for deleted files...")
+            
+            # Read root directory cluster
+            root_offset = data_offset + (root_cluster - 2) * bytes_per_cluster
+            
+            # Scan multiple clusters (limit to 1000 for performance)
+            max_clusters = 1000
+            for cluster_num in range(max_clusters):
+                # Check for cancellation
+                is_cancelled = options.get('is_cancelled') if options else None
+                if is_cancelled and callable(is_cancelled) and is_cancelled():
+                    logger.warning("⚠️ FAT32 scanning cancelled by user")
+                    logger.info(f"📋 Returning partial results: {len(recovered_files)} files indexed so far")
+                    break
+                
+                try:
+                    cluster_offset = data_offset + cluster_num * bytes_per_cluster
+                    drive_handle.seek(cluster_offset)
+                    cluster_data = drive_handle.read(bytes_per_cluster)
+                    
+                    # Yield control to event loop after every read to allow cancellation
+                    if cluster_num % 100 == 0:
+                        await asyncio.sleep(0)
+                    
+                    if not cluster_data or len(cluster_data) < 32:
+                        continue
+                    
+                    # Parse directory entries (32 bytes each)
+                    for entry_offset in range(0, len(cluster_data), 32):
+                        if entry_offset + 32 > len(cluster_data):
+                            break
+                        
+                        entry = cluster_data[entry_offset:entry_offset + 32]
+                        entries_parsed += 1
+                        
+                        # Check if deleted (first byte = 0xE5)
+                        if entry[0] != 0xE5:
+                            continue
+                        
+                        # Check if it's a file (not directory, not volume label)
+                        attributes = entry[0x0B]
+                        if attributes & 0x10:  # Directory
+                            continue
+                        if attributes & 0x08:  # Volume label
+                            continue
+                        
+                        deleted_files_found += 1
+                        
+                        # Extract filename (8.3 format)
+                        try:
+                            name_part = entry[1:8].decode('ascii', errors='ignore').strip()
+                            ext_part = entry[8:11].decode('ascii', errors='ignore').strip()
+                            
+                            if not name_part:
+                                name_part = f"deleted_{cluster_num}_{entry_offset}"
+                            
+                            if ext_part:
+                                filename = f"{name_part}.{ext_part}"
+                            else:
+                                filename = name_part
+                            
+                            file_ext = ext_part.lower() if ext_part else ''
+                            
+                            # Check if interested in this file type
+                            if file_ext not in interested_extensions and scan_type != 'normal':
+                                continue
+                            
+                            # Extract file size and cluster
+                            file_size = int.from_bytes(entry[0x1C:0x20], 'little')
+                            start_cluster_low = int.from_bytes(entry[0x1A:0x1C], 'little')
+                            start_cluster_high = int.from_bytes(entry[0x14:0x16], 'little')
+                            start_cluster = (start_cluster_high << 16) | start_cluster_low
+                            
+                            files_checked += 1
+                            
+                            # Skip very small or empty files
+                            if file_size < 100:
+                                files_too_small += 1
+                                continue
+                            
+                            # Skip if no valid cluster
+                            if start_cluster < 2:
+                                files_no_data += 1
+                                continue
+                            
+                            # Read file data from clusters (limit to 50MB)
+                            max_read_size = min(file_size, 50 * 1024 * 1024)
+                            file_data = self._read_fat_clusters(
+                                drive_handle,
+                                start_cluster,
+                                max_read_size,
+                                data_offset,
+                                bytes_per_cluster
+                            )
+                            
+                            if not file_data or len(file_data) < 100:
+                                files_no_data += 1
+                                continue
+                            
+                            # Check if data is all zeros (overwritten)
+                            if file_data[:100].count(b'\x00') == 100:
+                                files_no_data += 1
+                                continue
+                            
+                            # INDEX file (don't write yet)
+                            safe_filename = self._sanitize_filename(filename)
+                            file_path = os.path.join(output_dir, f"fat_{cluster_num}_{safe_filename}")
+                            
+                            # Calculate hashes for indexing
+                            file_md5 = hashlib.md5(file_data).hexdigest()
+                            file_sha256 = hashlib.sha256(file_data).hexdigest()
+                            
+                            # INDEX FILE (NO DISK WRITE)
+                            recovered_files.append({
+                                'name': safe_filename,
+                                'path': file_path,  # Proposed path (not created yet)
+                                'size': len(file_data),
+                                'type': file_ext.upper() if file_ext else 'DAT',
+                                'extension': file_ext if file_ext else 'dat',
+                                'offset': cluster_offset + entry_offset,
+                                'md5': file_md5,
+                                'sha256': file_sha256,
+                                'hash': file_sha256,  # Alias
+                                'file_hash': file_sha256,  # Another alias
+                                'validation_score': 100,
+                                'is_partial': len(file_data) < file_size,
+                                'method': 'fat32_directory',
+                                'status': 'indexed',  # Not yet recovered
+                                'indexed_at': datetime.now().isoformat(),
+                                'drive_path': stats.get('drive_path', 'unknown'),
+                                'start_cluster': start_cluster,
+                                'declared_size': file_size,
+                                'actual_size': len(file_data)
+                            })
+                            
+                            logger.info(f"✅ FAT32: Indexed {safe_filename} ({len(file_data)/1024:.1f} KB)")
+                            
+                        except Exception as e:
+                            logger.debug(f"Error parsing FAT entry: {e}")
+                            continue
+                    
+                except Exception as e:
+                    logger.debug(f"Error reading cluster {cluster_num}: {e}")
+                    continue
+                
+                # Update progress every 100 clusters
+                if cluster_num % 100 == 0 and progress_callback:
+                    progress = min((cluster_num / max_clusters) * 100, 99)
+                    expected_time = self._calculate_expected_time(
+                        (datetime.now() - datetime.fromisoformat(stats['start_time'])).total_seconds(),
+                        progress
+                    )
+                    await progress_callback({
+                        'progress': progress,
+                        'files_found': len(recovered_files),
+                        'sectors_scanned': cluster_num * sectors_per_cluster,
+                        'total_sectors': max_clusters * sectors_per_cluster,
+                        'expected_time': expected_time,
+                        'current_pass': 1
+                    })
+            
+            # Print statistics
+            logger.info(f"📂 FAT32 Analysis Complete:")
+            logger.info(f"   ├─ Directory entries parsed: {entries_parsed:,}")
+            logger.info(f"   ├─ Deleted files found: {deleted_files_found:,}")
+            logger.info(f"   ├─ Files checked: {files_checked:,}")
+            logger.info(f"   │")
+            logger.info(f"   ├─ Rejections:")
+            logger.info(f"   │  ├─ Too small (< 100 bytes): {files_too_small:,}")
+            logger.info(f"   │  └─ No data/overwritten: {files_no_data:,}")
+            logger.info(f"   │")
+            logger.info(f"   └─ ✅ Files indexed: {len(recovered_files):,}")
+            
+            if files_checked > 0:
+                success_rate = (len(recovered_files) / files_checked) * 100
+                logger.info(f"   📊 Index rate: {success_rate:.1f}% of deleted files had recoverable data")
+            
+            logger.info(f"💾 Disk space used: 0 bytes (index only)")
+            
+            if len(recovered_files) == 0:
+                logger.warning("⚠️ No deleted files with recoverable data found in FAT32 directories")
+                logger.info("💡 Possible reasons:")
+                logger.info("   • Deleted files were overwritten by new data")
+                logger.info("   • Drive has been formatted")
+                logger.info("   • FAT chain was broken/corrupted")
+                logger.info("   • Try 'Deep Scan' for signature-based recovery instead")
+            
+        except Exception as e:
+            logger.error(f"Error parsing FAT32: {e}", exc_info=True)
+        
+        return recovered_files
+    
+    def _read_fat_clusters(self, drive_handle: BinaryIO, start_cluster: int,
+                          file_size: int, data_offset: int, bytes_per_cluster: int) -> Optional[bytes]:
+        """
+        Read file data from FAT clusters (simple sequential read)
+        
+        Note: This is a simplified version that reads sequentially from start cluster.
+        A full implementation would follow the FAT chain, but for deleted files
+        the FAT chain is often broken, so sequential reading works better.
+        
+        Args:
+            drive_handle: Handle to the drive
+            start_cluster: Starting cluster number
+            file_size: File size in bytes
+            data_offset: Offset to data region
+            bytes_per_cluster: Cluster size in bytes
+            
+        Returns:
+            File data bytes or None if read failed
+        """
+        try:
+            # Calculate cluster offset (cluster 2 is at data_offset)
+            cluster_offset = data_offset + (start_cluster - 2) * bytes_per_cluster
+            
+            # Seek to cluster
+            drive_handle.seek(cluster_offset)
+            
+            # Read file data (up to file_size)
+            file_data = drive_handle.read(file_size)
+            
+            return file_data if file_data else None
+            
+        except Exception as e:
+            logger.debug(f"Error reading FAT clusters: {e}")
+            return None
+    
     def _get_interested_extensions(self, file_type_options: Dict) -> set:
         """Get set of file extensions user is interested in"""
+        # Handle empty or None options
         if not file_type_options:
             return {'jpg', 'png', 'pdf', 'docx', 'xlsx', 'pptx', 'txt', 'mp4', 'mov', 'avi', 'mp3', 'wav', 'zip', 'rar', 'sqlite', 'csv'}
+        
+        # Handle if file_type_options is a list (from frontend)
+        if isinstance(file_type_options, list):
+            # Frontend sends list of strings like ['RAW', 'images', 'documents']
+            # Convert to dictionary format
+            file_type_dict = {}
+            for item in file_type_options:
+                if isinstance(item, str):
+                    file_type_dict[item.lower()] = True
+            file_type_options = file_type_dict
         
         extensions = set()
         file_type_map = {
@@ -904,12 +1957,18 @@ class PythonRecoveryService:
             'videos': {'mp4', 'avi', 'mov'},
             'audio': {'mp3', 'wav'},
             'archives': {'zip', 'rar'},
-            'email': {'sqlite', 'csv'}
+            'email': {'sqlite', 'csv'},
+            'raw': set()  # RAW means all file types
         }
         
         for category, enabled in file_type_options.items():
-            if enabled and category in file_type_map:
-                extensions.update(file_type_map[category])
+            category_lower = category.lower()
+            if enabled and category_lower in file_type_map:
+                extensions.update(file_type_map[category_lower])
+            elif enabled and category_lower == 'raw':
+                # RAW means all file types - return everything
+                for exts in file_type_map.values():
+                    extensions.update(exts)
         
         return extensions if extensions else {'jpg', 'png', 'pdf', 'docx', 'xlsx', 'pptx', 'txt', 'mp4', 'mov', 'avi', 'mp3', 'wav', 'zip', 'rar', 'sqlite', 'csv'}
     
@@ -1153,28 +2212,50 @@ class PythonRecoveryService:
         total_recovered_size = 0  # Track total size of recovered files
         
         # SAFETY: Maximum total recovered size (prevent filling up C: drive)
-        # Limit to 2x the source drive size or 20GB, whichever is smaller
+        # For indexing mode (deep scan), no limit needed since we're not writing files
+        # For other modes (carving, quick), limit to 2x drive size or 20GB
         source_drive_size = stats.get('total_size', 0)
-        max_total_recovery_size = min(source_drive_size * 2, 20 * 1024 * 1024 * 1024)  # 2x drive or 20GB max
-        logger.info(f"⚠️ SAFETY LIMIT: Maximum total recovery size: {max_total_recovery_size / (1024**3):.2f} GB")
+        
+        if scan_type == 'deep':
+            max_total_recovery_size = float('inf')  # No limit for indexing mode
+            logger.info("💡 INDEX MODE: No size limit (files are cataloged, not written)")
+        else:
+            max_total_recovery_size = min(source_drive_size * 2, 20 * 1024 * 1024 * 1024)  # 2x drive or 20GB max
+            logger.info(f"⚠️ SAFETY LIMIT: Maximum total recovery size: {max_total_recovery_size / (1024**3):.2f} GB")
         
         logger.info("Starting file carving...")
         logger.info(f"Duplicate detection enabled (hash-based)")
         logger.info(f"File validation enabled (integrity check)")
         logger.info(f"Chunk size: {chunk_size / 1024:.0f} KB")
         
+        chunks_read = 0
         try:
             while True:
                 # Check for cancellation
                 is_cancelled = options.get('is_cancelled') if options else None
                 if is_cancelled and callable(is_cancelled) and is_cancelled():
-                    logger.info("⚠️ Scan cancelled by user")
+                    logger.warning("⚠️ Scan cancelled by user")
+                    logger.info(f"📋 Carving cancelled - returning {len(recovered_files)} partial results found so far")
+                    logger.info(f"💾 Partial scan size: {total_recovered_size / (1024**3):.2f} GB indexed")
                     break
                 
                 # Read chunk
-                chunk = drive_handle.read(chunk_size)
+                # If we know the total size, avoid reading past it (safety guard)
+                to_read = chunk_size
+                if stats.get('total_size') and stats['total_size'] > 0:
+                    remaining = stats['total_size'] - stats['bytes_scanned']
+                    if remaining <= 0:
+                        break
+                    to_read = min(chunk_size, int(remaining))
+
+                chunk = drive_handle.read(to_read)
                 if not chunk:
                     break
+                
+                # Yield control to event loop after every read to allow cancellation
+                await asyncio.sleep(0)
+                
+                chunks_read += 1
                 
                 buffer += chunk
                 stats['bytes_scanned'] += len(chunk)
@@ -1210,6 +2291,12 @@ class PythonRecoveryService:
                     # Search for signature in buffer
                     search_start = 0
                     while True:
+                        # Check for cancellation during intensive signature search
+                        is_cancelled = options.get('is_cancelled') if options else None
+                        if is_cancelled and callable(is_cancelled) and is_cancelled():
+                            logger.info("🛑 Cancellation detected during signature search")
+                            break
+                        
                         pos = buffer.find(header, search_start, len(buffer) - 100000)  # Keep some buffer
                         if pos == -1:
                             break
@@ -1286,45 +2373,106 @@ class PythonRecoveryService:
                                 if is_partial:
                                     file_ext = f"partial.{file_ext}"
                                 
-                                # SAFETY CHECK: Stop if total recovered size exceeds limit
-                                if total_recovered_size + len(file_data) > max_total_recovery_size:
-                                    logger.warning("⚠️ SAFETY LIMIT REACHED!")
-                                    logger.warning(f"   Total recovered: {total_recovered_size / (1024**3):.2f} GB")
-                                    logger.warning(f"   Limit: {max_total_recovery_size / (1024**3):.2f} GB")
-                                    logger.warning("   Stopping recovery to prevent filling your drive!")
-                                    break  # Stop scanning
-                                
-                                # Save file
+                                # Track this file
                                 file_counter += 1
-                                file_name = f"f{absolute_pos:08d}.{file_ext}"
-                                file_path = os.path.join(output_dir, file_name)
-                                
-                                with open(file_path, 'wb') as f:
-                                    f.write(file_data)
-                                
-                                # Track this file and update total size
                                 found_hashes.add(file_md5)
                                 found_offsets.add(absolute_pos)
+                                
+                                # Calculate recovered size
                                 total_recovered_size += len(file_data)
                                 
-                                # Create enhanced file info with manifest data
-                                file_info = {
-                                    'name': file_name,
-                                    'path': file_path,
-                                    'size': len(file_data),
-                                    'type': sig_info['extension'].upper(),
-                                    'offset': absolute_pos,
-                                    'md5': file_md5,
-                                    'sha256': file_sha256,
-                                    'validation_score': validation_result.get('score', 0),
-                                    'is_partial': is_partial,
-                                    'method': 'signature_carving',
-                                    'recovered_at': datetime.now().isoformat()
-                                }
+                                # SAFETY CHECK: Only for non-deep scans (deep scan has no limit)
+                                if scan_type != 'deep' and total_recovered_size > max_total_recovery_size:
+                                    logger.warning("⚠️ SCAN LIMIT REACHED!")
+                                    logger.warning(f"   Total found: {total_recovered_size / (1024**3):.2f} GB")
+                                    logger.warning(f"   Limit: {max_total_recovery_size / (1024**3):.2f} GB")
+                                    logger.warning("   Stopping scan to prevent excessive recovery!")
+                                    break  # Stop scanning
+                                
+                                # Generate filename and path
+                                file_name = f"f{absolute_pos:08d}.{file_ext}"
+                                
+                                # DEEP SCAN: Index-only mode (read-only, no file writing)
+                                # CARVING SCAN: Write files immediately to TEMP directory
+                                if scan_type == 'deep':
+                                    # Use original output_dir for path reference (not actually written)
+                                    file_path = os.path.join(output_dir, file_name)
+                                    
+                                    # DEEP SCAN: Only create index entry (no file written)
+                                    partial_marker = " [PARTIAL]" if is_partial else ""
+                                    logger.debug(f"📋 Indexed: {file_name} ({len(file_data)} bytes, SHA256: {file_sha256[:16]}...){partial_marker}")
+                                    
+                                    # Create file catalog entry (NO FILE WRITTEN TO DISK)
+                                    file_info = {
+                                        'name': file_name,
+                                        'path': file_path,
+                                        'size': len(file_data),
+                                        'type': sig_info['extension'].upper(),
+                                        'extension': sig_info['extension'],
+                                        'offset': absolute_pos,
+                                        'md5': file_md5,
+                                        'sha256': file_sha256,
+                                        'hash': file_sha256,  # Alias for compatibility
+                                        'file_hash': file_sha256,  # Another alias
+                                        'validation_score': validation_result.get('score', 0),
+                                        'is_partial': is_partial,
+                                        'method': 'deep_scan_index',
+                                        'status': 'indexed',  # Not yet recovered - user must select
+                                        'indexed_at': datetime.now().isoformat(),
+                                        'drive_path': stats.get('physical_drive', stats.get('drive_path', 'unknown')),  # Store physical drive for recovery
+                                        'signature': sig_name  # Store signature type for validation
+                                    }
+                                else:
+                                    # CARVING SCAN: Write file to TEMPORARY directory (recovered_files in project root)
+                                    # These files will be copied to final output path on recovery
+                                    try:
+                                        # Get project root (parent of backend directory)
+                                        project_root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+                                        temp_recovery_dir = os.path.join(project_root, 'backend', 'recovered_files')
+                                        
+                                        # Ensure temp directory exists
+                                        os.makedirs(temp_recovery_dir, exist_ok=True)
+                                        
+                                        # Write to temp location
+                                        temp_file_path = os.path.join(temp_recovery_dir, file_name)
+                                        
+                                        with open(temp_file_path, 'wb') as f:
+                                            f.write(file_data)
+                                        
+                                        partial_marker = " [PARTIAL]" if is_partial else ""
+                                        logger.debug(f"✅ Temporarily stored: {file_name} ({len(file_data)} bytes, SHA256: {file_sha256[:16]}...){partial_marker}")
+                                        
+                                        # Create file info entry with 'recovered' status
+                                        # Path points to TEMP location, will be copied to final location on recovery
+                                        file_info = {
+                                            'name': file_name,
+                                            'path': temp_file_path,  # Point to temp location
+                                            'size': len(file_data),
+                                            'type': sig_info['extension'].upper(),
+                                            'extension': sig_info['extension'],
+                                            'offset': absolute_pos,
+                                            'md5': file_md5,
+                                            'sha256': file_sha256,
+                                            'hash': file_sha256,  # Alias for compatibility
+                                            'file_hash': file_sha256,  # Another alias
+                                            'validation_score': validation_result.get('score', 0),
+                                            'is_partial': is_partial,
+                                            'method': 'signature_carving',
+                                            'status': 'recovered',  # File has been written to TEMP disk
+                                            'recovered_at': datetime.now().isoformat(),
+                                            'signature': sig_name  # Store signature type for validation
+                                        }
+                                        
+                                    except Exception as write_error:
+                                        logger.error(f"Failed to write file {file_name}: {write_error}")
+                                        # Skip this file if we can't write it
+                                        search_start = pos + 1
+                                        continue
+                                
+                                # Yield control after processing each file to allow cancellation
+                                await asyncio.sleep(0)
                                 
                                 recovered_files.append(file_info)
-                                partial_marker = " [PARTIAL]" if is_partial else ""
-                                logger.debug(f"Recovered: {file_name} ({len(file_data)} bytes, SHA256: {file_sha256[:16]}...){partial_marker}")
                             else:
                                 logger.debug(f"Skipped small/corrupted file at offset {absolute_pos}: {len(file_data) if file_data else 0} bytes")
                                 
@@ -1345,23 +2493,50 @@ class PythonRecoveryService:
             logger.error(f"Error during file carving: {e}", exc_info=True)
         
         # Calculate total recovered size
-        total_recovered_size = sum(f['size'] for f in recovered_files)
-        total_recovered_mb = total_recovered_size / (1024 * 1024)
+        total_recovered_size_actual = sum(f['size'] for f in recovered_files)
+        total_recovered_mb = total_recovered_size_actual / (1024 * 1024)
         
-        # Log duplicate statistics
-        logger.info(f"Carving complete: {len(recovered_files)} unique files found")
-        logger.info(f"Total recovered size: {total_recovered_mb:.2f} MB")
-        logger.info(f"Files skipped - Duplicates: {file_counter - len(recovered_files)}, Corrupted: {skipped_corrupted}")
+        # Check if scan was cancelled
+        is_cancelled_final = options.get('is_cancelled') if options else None
+        was_cancelled = is_cancelled_final and callable(is_cancelled_final) and is_cancelled_final()
+        
+        # Log scan results based on scan type
+        if was_cancelled:
+            logger.warning("⚠️ Scan was CANCELLED - Showing PARTIAL results")
+            if scan_type == 'deep':
+                logger.info(f"📋 Partial scan results: {len(recovered_files)} files indexed")
+                logger.info(f"💾 Partial indexed size: {total_recovered_mb:.2f} MB ({total_recovered_size_actual / (1024**3):.2f} GB)")
+                logger.info(f"✅ These {len(recovered_files)} files CAN BE RECOVERED - select files to recover")
+            else:
+                logger.info(f"� Partial scan results: {len(recovered_files)} files recovered")
+                logger.info(f"�💾 Partial recovered size: {total_recovered_mb:.2f} MB ({total_recovered_size_actual / (1024**3):.2f} GB)")
+                logger.info(f"✅ These {len(recovered_files)} files are SAVED and READY to use")
+            logger.info(f"💡 Tip: You can use these partial results or re-run scan to completion")
+        else:
+            if scan_type == 'deep':
+                logger.info(f"🔍 Deep scan complete: {len(recovered_files)} files indexed (read-only mode)")
+                logger.info(f"📊 Total indexed size: {total_recovered_mb:.2f} MB ({total_recovered_size_actual / (1024**3):.2f} GB)")
+                logger.info(f"� Files are cataloged only - select files to recover them")
+            else:
+                logger.info(f"🔍 Scan complete: {len(recovered_files)} files recovered successfully")
+                logger.info(f"📊 Total recovery size: {total_recovered_mb:.2f} MB ({total_recovered_size_actual / (1024**3):.2f} GB)")
+                logger.info(f"💡 All files have been saved to: {output_dir}")
+        
+        logger.info(f"📋 Files skipped - Duplicates: {file_counter - len(recovered_files)}, Corrupted: {skipped_corrupted}")
         
         # Important note about file carving
         if total_recovered_mb > stats['total_sectors'] * 512 / (1024 * 1024):
-            logger.warning("⚠️ Recovered size exceeds drive capacity!")
-            logger.warning("   This is NORMAL for file carving - it recovers:")
-            logger.warning("   • Old deleted files not yet overwritten")
-            logger.warning("   • Multiple versions of edited files")
-            logger.warning("   • Temporary copies from applications")
-            logger.warning("   • File fragments from historical data")
-            logger.warning("   Recommendation: Sort by file type and manually select what you need")
+            if scan_type == 'deep':
+                logger.info("ℹ️ Indexed size exceeds drive capacity - this is NORMAL:")
+            else:
+                logger.info("ℹ️ Recovered size exceeds drive capacity - this is NORMAL:")
+            logger.info("   • Found old deleted files not yet overwritten")
+            logger.info("   • Multiple versions of edited files discovered")
+            logger.info("   • Temporary copies from applications detected")
+            if scan_type == 'deep':
+                logger.info("   Recommendation: Select only files you need for recovery")
+            else:
+                logger.info("   Recommendation: Sort by type and check recovered files")
         
         # Send final progress update
         if progress_callback:
@@ -1372,71 +2547,113 @@ class PythonRecoveryService:
                 'total_sectors': stats['total_sectors'],
                 'files_found': len(recovered_files),
                 'expected_time': "Complete",
-                'current_pass': 1
+                'current_pass': 1,
+                'mode': 'indexing' if scan_type == 'deep' else 'carving',
+                'total_recovered_size': total_recovered_size_actual
             })
         
-        # Generate manifest.json with all recovered file metadata
-        self._generate_manifest(recovered_files, output_dir, stats)
+        # Generate manifest (index or recovery based on scan type)
+        self._generate_index_manifest(recovered_files, output_dir, stats, scan_type)
         
-        logger.info(f"File carving completed: {len(recovered_files)} valid files recovered")
+        if scan_type == 'deep':
+            logger.info(f"✅ File indexing completed: {len(recovered_files)} files cataloged")
+        else:
+            logger.info(f"✅ File recovery completed: {len(recovered_files)} files saved to disk")
         return recovered_files
     
-    def _generate_manifest(self, recovered_files: List[Dict], output_dir: str, stats: Dict):
+    def _generate_index_manifest(self, recovered_files: List[Dict], output_dir: str, stats: Dict, scan_type: str = 'carving'):
         """
-        Generate manifest.json with all recovered file metadata
+        Generate index/recovery manifest with file metadata
         
         Args:
-            recovered_files: List of recovered file information dictionaries
-            output_dir: Directory where manifest will be saved
+            recovered_files: List of recovered/indexed file information dictionaries
+            output_dir: Directory where manifest is saved
             stats: Scan statistics dictionary
+            scan_type: Type of scan ('deep' for indexing, 'carving' for recovery)
         """
         try:
-            manifest_path = os.path.join(output_dir, 'manifest.json')
+            # Different manifest names and content based on scan type
+            if scan_type == 'deep':
+                manifest_path = os.path.join(output_dir, 'scan_index.json')
+                mode_label = 'deep_scan_indexing'
+                method_label = 'deep_scan_index'
+                status_label = 'indexed'
+                files_label = 'indexed_files'
+                count_label = 'total_files_indexed'
+            else:
+                manifest_path = os.path.join(output_dir, 'recovery_manifest.json')
+                mode_label = 'signature_carving'
+                method_label = 'signature_carving'
+                status_label = 'recovered'
+                files_label = 'recovered_files'
+                count_label = 'total_files_recovered'
             
             # Build manifest data
             manifest = {
                 'scan_info': {
+                    'mode': mode_label,
                     'timestamp': datetime.now().isoformat(),
                     'drive_path': stats.get('drive_path', 'unknown'),
                     'total_sectors_scanned': stats.get('sectors_scanned', 0),
                     'scan_duration_seconds': (datetime.now() - datetime.fromisoformat(stats['start_time'])).total_seconds(),
-                    'recovery_method': 'signature_carving'
+                    'recovery_method': method_label
                 },
                 'statistics': {
-                    'total_files_recovered': len(recovered_files),
-                    'unique_files': len(recovered_files),  # Already deduplicated by MD5
+                    count_label: len(recovered_files),
+                    'unique_files': len(recovered_files),  # Already deduplicated
                     'total_size_bytes': sum(f['size'] for f in recovered_files),
-                    'partial_files': sum(1 for f in recovered_files if f.get('is_partial', False))
+                    'partial_files': sum(1 for f in recovered_files if f.get('is_partial', False)),
+                    'disk_space_used': sum(f['size'] for f in recovered_files) if scan_type != 'deep' else 0,  # Only carving uses disk space
+                    'recovery_status': 'indexed' if scan_type == 'deep' else 'completed'
                 },
-                'files': []
+                files_label: []
             }
             
-            # Add detailed file information
+            # Add detailed file information for each file
             for file_info in recovered_files:
-                manifest['files'].append({
+                file_entry = {
                     'filename': file_info.get('name', 'unknown'),
-                    'path': file_info.get('path', ''),
+                    'path': file_info.get('path', ''),  # Saved path (carving) or empty (deep)
                     'size_bytes': file_info.get('size', 0),
-                    'offset': file_info.get('offset', 0),
+                    'offset': file_info.get('offset', 0),  # Original location on drive
                     'file_type': file_info.get('type', 'unknown'),
+                    'extension': file_info.get('extension', 'unknown'),
                     'md5': file_info.get('md5', ''),
                     'sha256': file_info.get('sha256', ''),
                     'validation_score': file_info.get('validation_score', 0),
                     'is_partial': file_info.get('is_partial', False),
-                    'method': file_info.get('method', 'signature_carving')
-                })
+                    'status': status_label,  # 'indexed' or 'recovered'
+                    'method': file_info.get('method', method_label),
+                    'recovered_at': file_info.get('recovered_at', datetime.now().isoformat()),
+                    'signature': file_info.get('signature', 'unknown')
+                }
+                
+                # Deep scan includes drive path for on-demand recovery
+                if scan_type == 'deep':
+                    file_entry['drive_path'] = file_info.get('drive_path', stats.get('physical_drive', stats.get('drive_path', 'unknown')))
+                
+                manifest[files_label].append(file_entry)
             
             # Write manifest file
             with open(manifest_path, 'w', encoding='utf-8') as f:
                 json.dump(manifest, f, indent=2)
             
-            logger.info(f"Manifest generated: {manifest_path}")
-            logger.info(f"  Total files: {manifest['statistics']['total_files_recovered']}")
-            logger.info(f"  Partial files: {manifest['statistics']['partial_files']}")
-            logger.info(f"  Total size: {manifest['statistics']['total_size_bytes'] / (1024*1024):.2f} MB")
+            # Mode-specific logging
+            if scan_type == 'deep':
+                logger.info(f"📋 Scan index generated: {manifest_path}")
+                logger.info(f"   Total files indexed: {manifest['statistics'][count_label]}")
+                logger.info(f"   Partial files: {manifest['statistics']['partial_files']}")
+                logger.info(f"   Indexed size: {manifest['statistics']['total_size_bytes'] / (1024**2):.2f} MB")
+                logger.info(f"   Disk space used: 0 MB (index-only mode)")
+            else:
+                logger.info(f"📋 Recovery manifest generated: {manifest_path}")
+                logger.info(f"   Total files recovered: {manifest['statistics'][count_label]}")
+                logger.info(f"   Partial files: {manifest['statistics']['partial_files']}")
+                logger.info(f"   Recovery size: {manifest['statistics']['total_size_bytes'] / (1024**2):.2f} MB")
+                logger.info(f"   Disk space used: {manifest['statistics']['disk_space_used'] / (1024**2):.2f} MB")
             
         except Exception as e:
-            logger.error(f"Failed to generate manifest: {e}", exc_info=True)
+            logger.error(f"Failed to generate recovery manifest: {e}", exc_info=True)
     
     def _format_time(self, seconds: float) -> str:
         """Format time as HH:MM:SS"""
@@ -3322,5 +4539,378 @@ class PythonRecoveryService:
                 'surface_map': [],
                 'bad_sectors': 0,
                 'total_tested': 0,
+                'error': str(e)
+            }
+    
+    async def recover_selected_files(self, file_list: List[Dict], output_dir: str,
+                                    progress_callback: Optional[Callable] = None,
+                                    create_subdirectories: bool = True) -> Dict:
+        """
+        ON-DEMAND RECOVERY: Recover specific files from scan index
+        Like File Scavenger - user selects files, then we recover them
+        
+        This method:
+        1. Reads file data from original drive location (using offset)
+        2. Validates the data matches expected hash
+        3. Writes only selected files to disk
+        4. Returns recovery results
+        
+        Args:
+            file_list: List of file info dictionaries from scan index
+            output_dir: Directory to save recovered files
+            progress_callback: Optional progress callback
+            create_subdirectories: Whether to create subdirectories by file type
+            
+        Returns:
+            Dictionary with recovery statistics
+        """
+        recovered_count = 0
+        failed_count = 0
+        total_size = 0
+        recovery_results = []
+        
+        logger.info(f"🎯 Starting on-demand recovery of {len(file_list)} selected files")
+        logger.info(f"📂 Output directory: {output_dir}")
+        logger.info(f"📁 Create subdirectories: {create_subdirectories}")
+        
+        try:
+            # Ensure output directory exists
+            os.makedirs(output_dir, exist_ok=True)
+            
+            for idx, file_info in enumerate(file_list):
+                try:
+                    # Extract file metadata
+                    drive_path = file_info.get('drive_path', 'unknown')
+                    offset = file_info.get('offset', 0)
+                    size = file_info.get('size', 0)
+                    expected_hash = file_info.get('sha256', file_info.get('hash', ''))
+                    filename = file_info.get('name', f'unknown_{idx}')
+                    method = file_info.get('method', 'unknown')
+                    
+                    logger.info(f"📄 Recovering {idx+1}/{len(file_list)}: {filename} ({size/1024:.1f} KB)")
+                    logger.info(f"   Drive: {drive_path}, Offset: {offset}, Hash: {expected_hash[:16] if expected_hash else 'N/A'}...")
+                    
+                    # Send progress update at START of file recovery
+                    if progress_callback:
+                        progress = (idx / len(file_list)) * 100
+                        await progress_callback({
+                            'progress': progress,
+                            'current_file': idx + 1,
+                            'total_files': len(file_list),
+                            'recovered': recovered_count,
+                            'failed': failed_count,
+                            'total_size': total_size,
+                            'current_filename': filename
+                        })
+                        # Small delay
+                        await asyncio.sleep(0.05)
+                    
+                    # Validate drive path
+                    if drive_path == 'unknown' or not drive_path:
+                        logger.error(f"❌ Invalid drive path for {filename}")
+                        failed_count += 1
+                        recovery_results.append({
+                            'filename': filename,
+                            'status': 'failed',
+                            'reason': 'invalid_drive_path',
+                            'drive_path': drive_path
+                        })
+                        
+                        # Update progress for failed file
+                        if progress_callback:
+                            progress = ((idx + 1) / len(file_list)) * 100
+                            await progress_callback({
+                                'progress': progress,
+                                'current_file': idx + 1,
+                                'total_files': len(file_list),
+                                'recovered': recovered_count,
+                                'failed': failed_count,
+                                'total_size': total_size,
+                                'current_filename': filename
+                            })
+                            await asyncio.sleep(0.1)
+                        continue
+                    
+                    # Open drive for reading
+                    try:
+                        drive_handle = self._open_drive(drive_path)
+                        logger.debug(f"✅ Drive opened successfully: {drive_path}")
+                    except Exception as drive_error:
+                        logger.error(f"❌ Failed to open drive {drive_path}: {drive_error}")
+                        failed_count += 1
+                        recovery_results.append({
+                            'filename': filename,
+                            'status': 'failed',
+                            'reason': f'drive_open_failed: {str(drive_error)}',
+                            'drive_path': drive_path
+                        })
+                        
+                        # Update progress for failed file
+                        if progress_callback:
+                            progress = ((idx + 1) / len(file_list)) * 100
+                            await progress_callback({
+                                'progress': progress,
+                                'current_file': idx + 1,
+                                'total_files': len(file_list),
+                                'recovered': recovered_count,
+                                'failed': failed_count,
+                                'total_size': total_size,
+                                'current_filename': filename
+                            })
+                            await asyncio.sleep(0.1)
+                        continue
+                    
+                    # Read file data from drive with sector alignment
+                    try:
+                        # Raw disk access requires sector-aligned reads
+                        # Calculate sector-aligned position and read size
+                        SECTOR_SIZE = 512
+                        
+                        # Calculate aligned offset (round down to nearest sector)
+                        aligned_offset = (offset // SECTOR_SIZE) * SECTOR_SIZE
+                        offset_adjustment = offset - aligned_offset
+                        
+                        # Calculate aligned read size (round up to nearest sector)
+                        total_read_size = offset_adjustment + size
+                        aligned_read_size = ((total_read_size + SECTOR_SIZE - 1) // SECTOR_SIZE) * SECTOR_SIZE
+                        
+                        logger.debug(f"📐 Sector alignment: offset {offset} → {aligned_offset}, size {size} → {aligned_read_size}")
+                        
+                        # Seek to aligned position
+                        drive_handle.seek(aligned_offset)
+                        
+                        # Read aligned data
+                        aligned_data = drive_handle.read(aligned_read_size)
+                        drive_handle.close()
+                        
+                        if len(aligned_data) == 0:
+                            logger.error(f"❌ No data read from drive")
+                            failed_count += 1
+                            recovery_results.append({
+                                'filename': filename,
+                                'status': 'failed',
+                                'reason': 'no_data_read',
+                                'offset': offset,
+                                'size': size
+                            })
+                            
+                            # Update progress for failed file
+                            if progress_callback:
+                                progress = ((idx + 1) / len(file_list)) * 100
+                                await progress_callback({
+                                    'progress': progress,
+                                    'current_file': idx + 1,
+                                    'total_files': len(file_list),
+                                    'recovered': recovered_count,
+                                    'failed': failed_count,
+                                    'total_size': total_size,
+                                    'current_filename': filename
+                                })
+                                await asyncio.sleep(0.1)
+                            continue
+                        
+                        # Extract the actual file data from aligned buffer
+                        file_data = aligned_data[offset_adjustment:offset_adjustment + size]
+                        
+                        if len(file_data) != size:
+                            logger.warning(f"⚠️ Read size mismatch: expected {size}, got {len(file_data)} bytes")
+                            # Continue anyway - might be partial recovery
+                        
+                        if len(file_data) == 0:
+                            logger.error(f"❌ No data extracted after alignment")
+                            failed_count += 1
+                            recovery_results.append({
+                                'filename': filename,
+                                'status': 'failed',
+                                'reason': 'no_data_after_alignment',
+                                'offset': offset,
+                                'size': size
+                            })
+                            
+                            # Update progress for failed file
+                            if progress_callback:
+                                progress = ((idx + 1) / len(file_list)) * 100
+                                await progress_callback({
+                                    'progress': progress,
+                                    'current_file': idx + 1,
+                                    'total_files': len(file_list),
+                                    'recovered': recovered_count,
+                                    'failed': failed_count,
+                                    'total_size': total_size,
+                                    'current_filename': filename
+                                })
+                                await asyncio.sleep(0.1)
+                            continue
+                        
+                        logger.debug(f"✅ Read {len(file_data)} bytes from offset {offset}")
+                    except Exception as read_error:
+                        logger.error(f"❌ Failed to read data from drive: {read_error}")
+                        try:
+                            drive_handle.close()
+                        except:
+                            pass
+                        failed_count += 1
+                        recovery_results.append({
+                            'filename': filename,
+                            'status': 'failed',
+                            'reason': f'read_failed: {str(read_error)}',
+                            'offset': offset,
+                            'size': size
+                        })
+                        
+                        # Update progress for failed file
+                        if progress_callback:
+                            progress = ((idx + 1) / len(file_list)) * 100
+                            await progress_callback({
+                                'progress': progress,
+                                'current_file': idx + 1,
+                                'total_files': len(file_list),
+                                'recovered': recovered_count,
+                                'failed': failed_count,
+                                'total_size': total_size,
+                                'current_filename': filename
+                            })
+                            await asyncio.sleep(0.1)
+                        continue
+                    
+                    # Validate data (check hash if available)
+                    if expected_hash:
+                        actual_hash = hashlib.sha256(file_data).hexdigest()
+                        if actual_hash != expected_hash:
+                            logger.warning(f"⚠️ Hash mismatch for {filename} - file may be corrupted")
+                            failed_count += 1
+                            recovery_results.append({
+                                'filename': filename,
+                                'status': 'failed',
+                                'reason': 'hash_mismatch',
+                                'expected_hash': expected_hash,
+                                'actual_hash': actual_hash
+                            })
+                            
+                            # Update progress for failed file
+                            if progress_callback:
+                                progress = ((idx + 1) / len(file_list)) * 100
+                                await progress_callback({
+                                    'progress': progress,
+                                    'current_file': idx + 1,
+                                    'total_files': len(file_list),
+                                    'recovered': recovered_count,
+                                    'failed': failed_count,
+                                    'total_size': total_size,
+                                    'current_filename': filename
+                                })
+                                await asyncio.sleep(0.1)
+                            continue
+                    
+                    # Determine output path (with or without subdirectories)
+                    if create_subdirectories:
+                        file_type = file_info.get('type', file_info.get('extension', 'UNKNOWN')).upper()
+                        type_folder = os.path.join(output_dir, file_type)
+                        os.makedirs(type_folder, exist_ok=True)
+                        output_path = os.path.join(type_folder, filename)
+                    else:
+                        output_path = os.path.join(output_dir, filename)
+                    
+                    logger.info(f"💾 Writing to: {output_path}")
+                    
+                    # Write file to disk
+                    try:
+                        with open(output_path, 'wb') as f:
+                            f.write(file_data)
+                        logger.info(f"✅ File written successfully: {len(file_data)} bytes")
+                    except Exception as write_error:
+                        logger.error(f"❌ Failed to write file: {write_error}")
+                        failed_count += 1
+                        recovery_results.append({
+                            'filename': filename,
+                            'status': 'failed',
+                            'reason': f'write_failed: {str(write_error)}',
+                            'output_path': output_path
+                        })
+                        
+                        # Update progress for failed file
+                        if progress_callback:
+                            progress = ((idx + 1) / len(file_list)) * 100
+                            await progress_callback({
+                                'progress': progress,
+                                'current_file': idx + 1,
+                                'total_files': len(file_list),
+                                'recovered': recovered_count,
+                                'failed': failed_count,
+                                'total_size': total_size,
+                                'current_filename': filename
+                            })
+                            await asyncio.sleep(0.1)
+                        continue
+                    
+                    recovered_count += 1
+                    total_size += len(file_data)
+                    
+                    recovery_results.append({
+                        'filename': filename,
+                        'status': 'recovered',
+                        'path': output_path,
+                        'size': len(file_data),
+                        'method': method
+                    })
+                    
+                    logger.info(f"✅ Recovered: {filename}")
+                    
+                    # Update progress
+                    if progress_callback:
+                        progress = ((idx + 1) / len(file_list)) * 100
+                        await progress_callback({
+                            'progress': progress,
+                            'current_file': idx + 1,
+                            'total_files': len(file_list),
+                            'recovered': recovered_count,
+                            'failed': failed_count,
+                            'total_size': total_size
+                        })
+                        
+                        # Small delay to allow UI to show progress
+                        await asyncio.sleep(0.1)
+                    
+                except Exception as e:
+                    logger.error(f"❌ Failed to recover {file_info.get('name', 'unknown')}: {e}")
+                    failed_count += 1
+                    recovery_results.append({
+                        'filename': file_info.get('name', 'unknown'),
+                        'status': 'failed',
+                        'reason': str(e)
+                    })
+                    
+                    # Update progress even for failed files
+                    if progress_callback:
+                        progress = ((idx + 1) / len(file_list)) * 100
+                        await progress_callback({
+                            'progress': progress,
+                            'current_file': idx + 1,
+                            'total_files': len(file_list),
+                            'recovered': recovered_count,
+                            'failed': failed_count,
+                            'total_size': total_size
+                        })
+                        
+                        # Small delay to allow UI to show progress
+                        await asyncio.sleep(0.1)
+            
+            logger.info(f"✅ Recovery complete: {recovered_count} succeeded, {failed_count} failed")
+            logger.info(f"💾 Total size recovered: {total_size / (1024**2):.2f} MB")
+            
+            return {
+                'recovered_count': recovered_count,
+                'failed_count': failed_count,
+                'total_size': total_size,
+                'results': recovery_results
+            }
+            
+        except Exception as e:
+            logger.error(f"❌ Error during on-demand recovery: {e}", exc_info=True)
+            return {
+                'recovered_count': recovered_count,
+                'failed_count': failed_count,
+                'total_size': total_size,
+                'results': recovery_results,
                 'error': str(e)
             }

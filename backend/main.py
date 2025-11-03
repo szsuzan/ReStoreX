@@ -21,6 +21,11 @@ async def lifespan(app: FastAPI):
     logger.info("Starting ReStoreX Backend...")
     logger.info(f"Version: {settings.VERSION}")
     logger.info(f"Server: {settings.HOST}:{settings.PORT}")
+    
+    # Clean up temporary recovered files from previous sessions
+    from app.services.python_recovery_service import PythonRecoveryService
+    PythonRecoveryService.cleanup_temp_files()
+    
     yield
     logger.info("Shutting down ReStoreX Backend...")
 

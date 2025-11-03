@@ -107,7 +107,12 @@ export function ScanProgressDialog({ isOpen, onClose, onCancel, progress }) {
         {/* Actions */}
         <div className="flex gap-3">
           <button
-            onClick={onCancel}
+            onClick={() => {
+              console.log('🔴 CANCEL BUTTON CLICKED!');
+              console.log('onCancel function:', onCancel);
+              console.log('Calling onCancel now...');
+              onCancel();
+            }}
             className="flex-1 px-4 py-2.5 text-sm text-gray-700 bg-gray-100 hover:bg-gray-200 rounded-lg transition-colors font-medium"
           >
             Cancel Scan

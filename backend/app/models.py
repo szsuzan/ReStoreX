@@ -25,7 +25,15 @@ class RecoveredFile(BaseModel):
     sector: Optional[int] = None
     cluster: Optional[int] = None
     inode: Optional[int] = None
-    status: Literal['found', 'recovering', 'recovered', 'failed'] = 'found'
+    status: Literal['found', 'recovering', 'recovered', 'failed', 'indexed'] = 'found'
+    # Additional fields for indexed file recovery (deep scan)
+    offset: Optional[int] = None
+    drivePath: Optional[str] = None
+    drive_path: Optional[str] = None  # Alternative field name
+    sha256: Optional[str] = None
+    hash: Optional[str] = None  # Alternative field name
+    method: Optional[str] = None
+    extension: Optional[str] = None
 
 
 class ScanOptions(BaseModel):

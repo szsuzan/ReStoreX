@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Home, CheckCircle, Search, AlertCircle, Clock } from 'lucide-react';
+import { Home, CheckCircle, Search, AlertCircle, Clock, Loader2 } from 'lucide-react';
 
 /**
  * @param {Object} props
@@ -8,8 +8,20 @@ import { Home, CheckCircle, Search, AlertCircle, Clock } from 'lucide-react';
  * @param {(query: string) => void} props.onSearchChange
  * @param {() => void} props.onNavigateToDashboard
  * @param {boolean} props.showSearch - Whether to show the search bar
+ * @param {boolean} props.isBackgroundScan - Whether a scan is running in background
+ * @param {Object} props.scanProgress - Current scan progress
+ * @param {() => void} props.onReopenScan - Callback to reopen scan dialog
  */
-export function Header({ scanStatus, searchQuery, onSearchChange, onNavigateToDashboard, showSearch = true }) {
+export function Header({ 
+  scanStatus, 
+  searchQuery, 
+  onSearchChange, 
+  onNavigateToDashboard, 
+  showSearch = true,
+  isBackgroundScan = false,
+  scanProgress = {},
+  onReopenScan
+}) {
   const [isSearchFocused, setIsSearchFocused] = useState(false);
 
   const getStatusIcon = () => {
@@ -33,8 +45,24 @@ export function Header({ scanStatus, searchQuery, onSearchChange, onNavigateToDa
         </div>
       </div>
 
-      {/* Center Section - Search (only show when showSearch is true) */}
-      {showSearch && (
+      {/* Center Section - Background Scan Indicator or Search */}
+      {isBackgroundScan ? (
+        <div 
+          onClick={onReopenScan}
+          className="flex items-center gap-3 px-4 py-2 bg-blue-50 hover:bg-blue-100 rounded-lg cursor-pointer transition-all duration-200 border border-blue-200 shadow-sm"
+          title="Click to view scan progress"
+        >
+          <Loader2 className="w-4 h-4 text-blue-600 animate-spin" />
+          <div className="flex flex-col">
+            <span className="text-sm font-medium text-blue-900">Scanning in Background</span>
+            <div className="flex items-center gap-2 text-xs text-blue-700">
+              <span>{scanProgress.progress?.toFixed(1) || 0}%</span>
+              <span>•</span>
+              <span>{scanProgress.filesFound || 0} files found</span>
+            </div>
+          </div>
+        </div>
+      ) : showSearch ? (
         <div className="flex-1 max-w-md mx-8">
           <div className={`relative transition-all duration-200 ${isSearchFocused ? 'scale-105' : ''}`}>
             <Search className="w-4 h-4 text-gray-400 absolute left-3 top-1/2 transform -translate-y-1/2" />
@@ -49,7 +77,7 @@ export function Header({ scanStatus, searchQuery, onSearchChange, onNavigateToDa
             />
           </div>
         </div>
-      )}
+      ) : null}
     </div>
   );
 }

@@ -297,6 +297,8 @@ function App() {
     currentPass: 0,
     expectedTime: 'Calculating...',
   });
+  
+  const [isBackgroundScan, setIsBackgroundScan] = useState(false); // Track if scan is running in background
 
   const [recoveryProgress, setRecoveryProgress] = useState({
     isRecovering: false,
@@ -423,6 +425,7 @@ function App() {
         }
         
         setShowScanProgress(false);
+        setIsBackgroundScan(false);
         setScanProgress({
           isScanning: false,
           progress: 0,
@@ -454,6 +457,13 @@ function App() {
         // Close the scan progress dialog after a short delay
         setTimeout(() => {
           setShowScanProgress(false);
+          setIsBackgroundScan(false);
+          
+          // Show notification if scan completed in background
+          if (isBackgroundScan) {
+            showNotification('success', 'Scan Complete', 
+              `Scan completed successfully! Found ${data.filesFound || 0} files. View results now.`);
+          }
         }, 1500);
       }
     });
@@ -529,10 +539,14 @@ function App() {
     setNotificationTimeoutId(timeoutId);
   };
 
-  // Helper function to add recent activity
+  // Helper function to add recent activity with unique ID
+  let activityCounter = 0;
   const addRecentActivity = (activity) => {
     setRecentActivities(prev => {
-      const newActivities = [activity, ...prev].slice(0, 10); // Keep only last 10
+      // Ensure unique ID by adding a counter to timestamp
+      const uniqueId = `${activity.id || Date.now()}-${activityCounter++}`;
+      const newActivity = { ...activity, id: uniqueId };
+      const newActivities = [newActivity, ...prev].slice(0, 10); // Keep only last 10
       return newActivities;
     });
   };
@@ -1101,6 +1115,7 @@ function App() {
       });
       
       setCurrentScanId(response.scanId);
+      setIsBackgroundScan(false); // Reset background flag when starting new scan
       setScanProgress({
         isScanning: true,
         progress: 0,
@@ -1116,8 +1131,17 @@ function App() {
         try {
           const status = await apiService.getScanStatus(response.scanId);
           console.log('Scan status update (polling):', status);
+          
+          // Stop polling if scan is no longer running
           if (status.status === 'completed' || status.status === 'failed' || status.status === 'cancelled') {
+            console.log(`Stopping poll interval for scan ${response.scanId} - status: ${status.status}`);
             clearInterval(pollInterval);
+            
+            // Skip if we've already processed this status change
+            if (currentScanId !== response.scanId) {
+              console.log('Scan ID mismatch, skipping processing');
+              return;
+            }
             if (status.status === 'completed') {
               console.log('Scan completed (via polling), loading results...');
               console.log('Full status object:', status);
@@ -1154,9 +1178,11 @@ function App() {
               // Close dialog and navigate to files view
               setTimeout(() => {
                 setShowScanProgress(false);
+                setIsBackgroundScan(false);
               }, 1500);
             } else if (status.status === 'failed') {
               setShowScanProgress(false);
+              setIsBackgroundScan(false);
               
               // Add activity for scan failure
               addRecentActivity({
@@ -1174,6 +1200,7 @@ function App() {
             } else if (status.status === 'cancelled') {
               console.log('Scan cancelled (via polling) - checking for partial results');
               setShowScanProgress(false);
+              setIsBackgroundScan(false);
               
               // Try to load partial results if any files were found
               if (status.files_found && status.files_found > 0) {
@@ -1466,6 +1493,9 @@ function App() {
         onSearchChange={(query) => setFilterOptions(prev => ({ ...prev, searchQuery: query }))}
         onNavigateToDashboard={() => navigateToView('dashboard')}
         showSearch={currentView !== 'dashboard'}
+        isBackgroundScan={isBackgroundScan}
+        scanProgress={scanProgress}
+        onReopenScan={() => setShowScanProgress(true)}
       />
 
       {/* Main Content */}
@@ -1634,7 +1664,13 @@ function App() {
 
       <ScanProgressDialog
         isOpen={showScanProgress}
-        onClose={() => setShowScanProgress(false)}
+        onClose={() => {
+          console.log('Moving scan to background');
+          setShowScanProgress(false);
+          setIsBackgroundScan(true);
+          showNotification('info', 'Scan Running in Background', 
+            'The scan is continuing in the background. Click the indicator at the top to view progress.');
+        }}
         onCancel={async () => {
           if (currentScanId) {
             try {
@@ -1646,8 +1682,9 @@ function App() {
               await apiService.cancelScan(currentScanId);
               console.log('Scan cancelled successfully');
               
-              // Close the progress dialog first
+              // Close the progress dialog and stop background indicator
               setShowScanProgress(false);
+              setIsBackgroundScan(false);
               
               // Wait a bit for backend to save partial results
               await new Promise(resolve => setTimeout(resolve, 1000));

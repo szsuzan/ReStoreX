@@ -5,10 +5,38 @@ import logging
 import os
 import base64
 from io import BytesIO
+import hashlib
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter()
+
+# Cache for generated thumbnails from indexed files
+thumbnail_cache = {}
+
+
+def generate_thumbnail_from_data(file_data: bytes, size: int = 150) -> bytes:
+    """Generate a thumbnail from raw file data"""
+    try:
+        from PIL import Image
+        
+        # Load image from bytes
+        img = Image.open(BytesIO(file_data))
+        
+        # Convert to RGB if necessary (handles RGBA, P, etc.)
+        if img.mode not in ('RGB', 'L'):
+            img = img.convert('RGB')
+        
+        # Create thumbnail
+        img.thumbnail((size, size), Image.Resampling.LANCZOS)
+        
+        # Save to bytes
+        output = BytesIO()
+        img.save(output, format='JPEG', quality=85)
+        return output.getvalue()
+    except Exception as e:
+        logger.error(f"Error generating thumbnail from data: {e}")
+        return None
 
 
 def generate_thumbnail(file_path: str, size: int = 150) -> bytes:
@@ -105,9 +133,79 @@ async def get_file_thumbnail(file_id: str, size: int = Query(150)):
         file_metadata = recovery_service.file_metadata_cache.get(file_id, {})
         file_path = file_metadata.get('path', '')
         file_type = file_metadata.get('type', '').upper()
+        file_status = file_metadata.get('status', 'unknown')
         
-        # Check if file exists and is an image
-        if file_path and os.path.exists(file_path):
+        # Check cache first for indexed files
+        cache_key = f"{file_id}_{size}"
+        if cache_key in thumbnail_cache:
+            return Response(
+                content=thumbnail_cache[cache_key],
+                media_type="image/jpeg",
+                headers={
+                    "X-File-Id": file_id,
+                    "Cache-Control": "public, max-age=3600"
+                }
+            )
+        
+        # For indexed files (deep scan), generate thumbnail from drive data
+        if file_status == 'indexed' and file_type in ['PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'WEBP', 'TIFF']:
+            try:
+                # Get drive location info
+                drive_path = file_metadata.get('drive_path', '')
+                offset = file_metadata.get('offset', 0)
+                file_size = file_metadata.get('size', 0)
+                
+                if drive_path and offset > 0 and file_size > 0:
+                    # Read image data from drive with sector alignment
+                    from app.services.python_recovery_service import PythonRecoveryService
+                    recovery_service_instance = PythonRecoveryService()
+                    
+                    # Open drive
+                    drive_handle = recovery_service_instance._open_drive(drive_path)
+                    
+                    # Raw disk access requires sector-aligned reads
+                    SECTOR_SIZE = 512
+                    
+                    # Limit read size to 5MB for thumbnails
+                    actual_size = min(file_size, 5 * 1024 * 1024)
+                    
+                    # Calculate sector-aligned position and size
+                    aligned_offset = (offset // SECTOR_SIZE) * SECTOR_SIZE
+                    offset_adjustment = offset - aligned_offset
+                    total_read_size = offset_adjustment + actual_size
+                    aligned_read_size = ((total_read_size + SECTOR_SIZE - 1) // SECTOR_SIZE) * SECTOR_SIZE
+                    
+                    # Seek to aligned position and read
+                    drive_handle.seek(aligned_offset)
+                    aligned_data = drive_handle.read(aligned_read_size)
+                    drive_handle.close()
+                    
+                    # Extract actual file data from aligned buffer
+                    file_data = aligned_data[offset_adjustment:offset_adjustment + actual_size]
+                    
+                    if len(file_data) > 0:
+                        # Generate thumbnail from data
+                        thumbnail_data = generate_thumbnail_from_data(file_data, size)
+                        
+                        if thumbnail_data:
+                            # Cache the thumbnail
+                            thumbnail_cache[cache_key] = thumbnail_data
+                            
+                            return Response(
+                                content=thumbnail_data,
+                                media_type="image/jpeg",
+                                headers={
+                                    "X-File-Id": file_id,
+                                    "Cache-Control": "public, max-age=3600",
+                                    "X-Source": "indexed"
+                                }
+                            )
+            except Exception as e:
+                logger.warning(f"Failed to generate thumbnail from indexed file: {e}")
+                # Fall through to placeholder generation
+        
+        # Check if file exists and is an image (for recovered files)
+        elif file_path and os.path.exists(file_path):
             if file_type in ['PNG', 'JPG', 'JPEG', 'GIF', 'BMP', 'WEBP', 'TIFF']:
                 # Generate real thumbnail
                 thumbnail_data = generate_thumbnail(file_path, size)
@@ -117,7 +215,8 @@ async def get_file_thumbnail(file_id: str, size: int = Query(150)):
                         media_type="image/jpeg",
                         headers={
                             "X-File-Id": file_id,
-                            "Cache-Control": "public, max-age=3600"
+                            "Cache-Control": "public, max-age=3600",
+                            "X-Source": "recovered"
                         }
                     )
         
@@ -133,6 +232,10 @@ async def get_file_thumbnail(file_id: str, size: int = Query(150)):
             'PDF': (244, 67, 54),
             'MP4': (103, 58, 183),
             'ZIP': (255, 152, 0),
+            'GIF': (33, 150, 243),
+            'BMP': (96, 125, 139),
+            'WEBP': (0, 188, 212),
+            'TIFF': (121, 85, 72),
         }
         color = colors.get(file_type, (158, 158, 158))
         
@@ -155,7 +258,10 @@ async def get_file_thumbnail(file_id: str, size: int = Query(150)):
         return Response(
             content=output.getvalue(),
             media_type="image/png",
-            headers={"X-File-Id": file_id}
+            headers={
+                "X-File-Id": file_id,
+                "X-Source": "placeholder"
+            }
         )
     except Exception as e:
         logger.error(f"Error generating thumbnail for {file_id}: {e}")

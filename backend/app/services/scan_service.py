@@ -129,7 +129,11 @@ class ScanService:
             
             # Create cancellation checker
             def is_cancelled():
-                return self.active_scans.get(scan_id, {}).get('status') == 'cancelled'
+                current_status = self.active_scans.get(scan_id, {}).get('status')
+                is_cancelled_result = current_status == 'cancelled'
+                if is_cancelled_result:
+                    logger.info(f"🚫 is_cancelled() returning True - scan status is '{current_status}'")
+                return is_cancelled_result
             
             # Add cancellation checker to options
             scan_options['is_cancelled'] = is_cancelled
@@ -147,11 +151,18 @@ class ScanService:
             statistics = result.get('statistics', {})
             
             logger.info(f"Python scan completed/cancelled: {len(recovered_files)} files found so far")
+            logger.info(f"💡 NOTE: Files are INDEXED only (0 bytes written to disk)")
+            logger.info(f"📋 Use selective recovery to write specific files")
             
             # Convert to RecoveredFile format and save even if cancelled
             # This allows viewing and recovering partial results
             self.scan_results[scan_id] = self._convert_to_recovered_files(recovered_files, scan_id)
             scan_info["files_found"] = len(self.scan_results[scan_id])
+            
+            # Mark that these are indexed files (not actually recovered yet)
+            scan_info["indexed_mode"] = True
+            scan_info["disk_space_used"] = 0  # No files written
+            scan_info["recovery_mode"] = "selective"  # Requires selective recovery
             
             # Store additional scan-specific data (for cluster and health scans)
             if 'cluster_map' in result:
@@ -265,6 +276,15 @@ class ScanService:
             try:
                 size_bytes = file_dict.get('size', 0)
                 size_str = self._format_file_size(size_bytes)
+                file_status = file_dict.get('status', 'found')
+                
+                # For indexed files, use 'indexed' status; otherwise use 'found'
+                if file_status == 'indexed':
+                    display_status = 'indexed'
+                elif file_status in ['recovered', 'failed', 'recovering']:
+                    display_status = file_status
+                else:
+                    display_status = 'found'
                 
                 recovered_file = RecoveredFile(
                     id=f"{scan_id}_{file_dict.get('name', 'unknown')}",
@@ -272,13 +292,21 @@ class ScanService:
                     type=file_dict.get('type', 'DAT').upper(),
                     size=size_str,
                     sizeBytes=size_bytes,
-                    dateModified=file_dict.get('recovered_at', datetime.now().isoformat()),
+                    dateModified=file_dict.get('recovered_at', file_dict.get('indexed_at', datetime.now().isoformat())),
                     path=file_dict.get('path', ''),
                     recoveryChance=self._estimate_recovery_chance(file_dict),
                     sector=file_dict.get('offset', 0) // 512,  # Convert offset to sector
                     thumbnail=None,
                     isSelected=False,
-                    status='found'
+                    status=display_status,
+                    # Additional fields for indexed file recovery
+                    offset=file_dict.get('offset', 0),
+                    drivePath=file_dict.get('drive_path', ''),
+                    drive_path=file_dict.get('drive_path', ''),
+                    sha256=file_dict.get('sha256', file_dict.get('hash', '')),
+                    hash=file_dict.get('sha256', file_dict.get('hash', '')),
+                    method=file_dict.get('method', 'unknown'),
+                    extension=file_dict.get('extension', file_dict.get('type', '').lower())
                 )
                 recovered_files.append(recovered_file)
             except Exception as e:
@@ -328,30 +356,36 @@ class ScanService:
     
     async def cancel_scan(self, scan_id: str):
         """Cancel a running scan"""
+        logger.info(f"🛑 Cancel scan request received for scan_id: {scan_id}")
+        logger.info(f"📋 Current active scans: {list(self.active_scans.keys())}")
+        
         if scan_id in self.active_scans:
-            logger.info(f"Cancelling scan {scan_id}...")
+            logger.info(f"✅ Found scan {scan_id} in active_scans")
             scan_info = self.active_scans[scan_id]
+            logger.info(f"📊 Current scan status: {scan_info['status']}")
             
             # Only cancel if it's actually running
             if scan_info["status"] in ["running", "pending"]:
+                logger.info(f"🔄 Changing status from '{scan_info['status']}' to 'cancelled'")
                 scan_info["status"] = "cancelled"
-                scan_info["progress"] = 0
+                current_progress = scan_info.get("progress", 0)
                 scan_info["end_time"] = time.time()
                 
                 # Broadcast cancellation status
                 await self._broadcast_progress(scan_id)
                 
-                logger.info(f"Scan {scan_id} cancelled successfully")
+                logger.info(f"✅ Scan {scan_id} cancelled successfully at {current_progress}% progress")
+                logger.info(f"📡 Cancellation broadcast sent, is_cancelled() should now return True")
                 
                 # Clean up after a short delay to allow final broadcast
                 await asyncio.sleep(0.5)
                 
                 return True
             else:
-                logger.warning(f"Scan {scan_id} is not in a cancellable state (status: {scan_info['status']})")
+                logger.warning(f"⚠️ Scan {scan_id} is not in a cancellable state (status: {scan_info['status']})")
                 return False
         else:
-            logger.warning(f"Attempted to cancel non-existent scan {scan_id}")
+            logger.warning(f"❌ Attempted to cancel non-existent scan {scan_id}")
             raise HTTPException(status_code=404, detail=f"Scan {scan_id} not found")
 
 
